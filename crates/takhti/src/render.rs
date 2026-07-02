@@ -6,13 +6,23 @@
 //! positions from integer *logical* locations and rounds each element
 //! independently, which drifts decorations a pixel away from windows at
 //! fractional scales.
+//!
+//! Everything is generic over [`TakhtiRenderer`] so the same scene code
+//! drives the winit backend's `GlesRenderer` and the TTY backend's
+//! multi-GPU `MultiRenderer`.
+
+use std::collections::HashMap;
 
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
-use smithay::backend::renderer::element::solid::SolidColorRenderElement;
+use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
-use smithay::backend::renderer::element::{AsRenderElements, Kind};
-use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::desktop::layer_map_for_output;
+use smithay::backend::renderer::element::utils::RescaleRenderElement;
+use smithay::backend::renderer::element::{AsRenderElements, Kind, RenderElementStates};
+use smithay::backend::renderer::{ImportAll, ImportMem, Renderer, Texture};
+use smithay::desktop::utils::{
+    surface_presentation_feedback_flags_from_states, OutputPresentationFeedback,
+};
+use smithay::desktop::{layer_map_for_output, Window};
 use smithay::output::Output;
 use smithay::render_elements;
 use smithay::utils::{Physical, Point, Scale};
@@ -20,13 +30,55 @@ use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
 
 use crate::coords;
 use crate::space::PhysicalSpace;
-use crate::state::Takhti;
+
+/// Renderer bounds for takhti's render elements, satisfied by both
+/// `GlesRenderer` (winit) and `MultiRenderer` (TTY). The associated types
+/// pin `TextureId` the niri way, since associated type bounds can't be
+/// written in a supertrait list directly.
+pub trait TakhtiRenderer:
+    ImportAll + ImportMem + Renderer<TextureId = Self::TakhtiTextureId>
+{
+    type TakhtiTextureId: Texture + Clone + Send + 'static;
+}
+
+impl<R> TakhtiRenderer for R
+where
+    R: ImportAll + ImportMem,
+    R::TextureId: Texture + Clone + Send + 'static,
+{
+    type TakhtiTextureId = R::TextureId;
+}
 
 render_elements! {
-    pub OutputRenderElements<=GlesRenderer>;
+    pub OutputRenderElements<R> where R: ImportAll + ImportMem;
     Solid=SolidColorRenderElement,
-    Memory=MemoryRenderBufferRenderElement<GlesRenderer>,
-    Surface=WaylandSurfaceRenderElement<GlesRenderer>,
+    Memory=MemoryRenderBufferRenderElement<R>,
+    Surface=WaylandSurfaceRenderElement<R>,
+    // Camera-zoomed variants (view_zoom != 1 only): window content and
+    // border slabs scaled around the view origin.
+    ZoomedSurface=RescaleRenderElement<WaylandSurfaceRenderElement<R>>,
+    ZoomedSolid=RescaleRenderElement<SolidColorRenderElement>,
+}
+
+/// Collect wp-presentation feedback for everything rendered on `output`.
+/// Scanout attribution mirrors the frame-callback policy (`send_frames`):
+/// every surface drawn is attributed to the output being presented.
+pub fn take_presentation_feedback(
+    space: &PhysicalSpace,
+    output: &Output,
+    render_element_states: &RenderElementStates,
+) -> OutputPresentationFeedback {
+    let mut feedback = OutputPresentationFeedback::new(output);
+    let flags = |surface: &_, _: &_| {
+        surface_presentation_feedback_flags_from_states(surface, None, render_element_states)
+    };
+    for window in space.elements() {
+        window.take_presentation_feedback(&mut feedback, |_, _| Some(output.clone()), flags);
+    }
+    for layer in layer_map_for_output(output).layers() {
+        layer.take_presentation_feedback(&mut feedback, |_, _| Some(output.clone()), flags);
+    }
+    feedback
 }
 
 /// Border frame slabs drawn around windows (buffers are persisted in `Takhti`
@@ -37,34 +89,52 @@ render_elements! {
 /// Widths and positions are physical pixels; the solid buffers are sized in
 /// physical too, so they render with scale 1.0 (buffer units == pixels) and
 /// can never land off-grid.
-pub fn border_elements(takhti: &Takhti, output_loc: Point<i32, Physical>) -> Vec<OutputRenderElements> {
-    let width = takhti.lua.settings().border_width;
+// Window keys hash by their stable id despite interior mutability.
+#[allow(clippy::mutable_key_type)]
+pub fn border_elements<R: TakhtiRenderer>(
+    space: &PhysicalSpace,
+    border_buffers: &HashMap<Window, [SolidColorBuffer; 4]>,
+    width: i32,
+    output_loc: Point<i32, Physical>,
+) -> Vec<OutputRenderElements<R>> {
     if width <= 0 {
         return Vec::new();
     }
+    let zoom = space.view_zoom();
+    // Borders live in world space with the windows they frame.
+    let cam_loc = output_loc + space.view_offset();
     let mut elements = Vec::new();
-    for window in takhti.space.elements() {
-        let Some(buffers) = takhti.border_buffers.get(window) else {
+    for window in space.elements() {
+        let Some(buffers) = border_buffers.get(window) else {
             continue;
         };
-        let Some(geo) = takhti.space.element_geometry(window) else {
+        let Some(geo) = space.element_geometry(window) else {
             continue;
         };
-        let loc = geo.loc - output_loc;
+        let loc = geo.loc - cam_loc;
         let offsets: [Point<i32, Physical>; 4] = [
-            Point::from((-width, -width)),          // top
-            Point::from((-width, geo.size.h)),      // bottom
-            Point::from((-width, 0)),               // left
-            Point::from((geo.size.w, 0)),           // right
+            Point::from((-width, -width)),     // top
+            Point::from((-width, geo.size.h)), // bottom
+            Point::from((-width, 0)),          // left
+            Point::from((geo.size.w, 0)),      // right
         ];
         for (buffer, offset) in buffers.iter().zip(offsets) {
-            elements.push(OutputRenderElements::Solid(SolidColorRenderElement::from_buffer(
+            let solid = SolidColorRenderElement::from_buffer(
                 buffer,
                 loc + offset,
                 1.0,
                 1.0,
                 Kind::Unspecified,
-            )));
+            );
+            elements.push(if zoom == 1.0 {
+                OutputRenderElements::Solid(solid)
+            } else {
+                OutputRenderElements::ZoomedSolid(RescaleRenderElement::from_element(
+                    solid,
+                    Point::from((-output_loc.x, -output_loc.y)),
+                    zoom,
+                ))
+            });
         }
     }
     elements
@@ -73,20 +143,20 @@ pub fn border_elements(takhti: &Takhti, output_loc: Point<i32, Physical>) -> Vec
 /// Build the full scene for one output (everything except the cursor), in
 /// render order: earlier elements draw on top. `ui` and `borders` are built
 /// by the caller because they need parts of `Takhti` this borrow can't reach.
-pub fn scene_elements(
-    renderer: &mut GlesRenderer,
+pub fn scene_elements<R: TakhtiRenderer>(
+    renderer: &mut R,
     space: &PhysicalSpace,
     output: &Output,
-    ui: Vec<OutputRenderElements>,
-    borders: Vec<OutputRenderElements>,
-) -> Vec<OutputRenderElements> {
+    ui: Vec<OutputRenderElements<R>>,
+    borders: Vec<OutputRenderElements<R>>,
+) -> Vec<OutputRenderElements<R>> {
     let scale = space.scale();
     let render_scale = Scale::from(scale);
     let Some(output_geo) = space.output_geometry(output) else {
         return ui;
     };
 
-    let layer_elements = |renderer: &mut GlesRenderer, kinds: [WlrLayer; 2]| {
+    let layer_elements = |renderer: &mut R, kinds: [WlrLayer; 2]| {
         let layers = layer_map_for_output(output);
         let mut elements = Vec::new();
         for kind in kinds {
@@ -107,27 +177,57 @@ pub fn scene_elements(
 
     // Windows top → bottom. The stored location is the geometry origin; the
     // buffer origin shifts by the client's (logical) geometry offset, rounded
-    // once onto the grid.
+    // once onto the grid. Windows live in world space: the camera pans them
+    // by an integer offset (still pixel-exact) and, at zoom != 1 only, scales
+    // them around the view origin via RescaleRenderElement.
+    let zoom = space.view_zoom();
+    let cam_loc = output_geo.loc + space.view_offset();
     for window in space.elements().rev() {
         let Some(geo) = space.element_geometry(window) else {
             continue;
         };
-        if output_geo.intersection(geo).is_none() {
+        if space
+            .world_rect_to_screen(geo)
+            .intersection(output_geo.to_f64())
+            .is_none()
+        {
             continue;
         }
         let buffer_offset =
             coords::logical_point_to_physical(window.geometry().loc.to_f64(), scale);
-        let loc = geo.loc - buffer_offset - output_geo.loc;
-        elements.extend(window.render_elements::<OutputRenderElements>(
-            renderer,
-            loc,
-            render_scale,
-            1.0,
-        ));
+        let loc = geo.loc - buffer_offset - cam_loc;
+        if zoom == 1.0 {
+            elements.extend(window.render_elements::<OutputRenderElements<R>>(
+                renderer,
+                loc,
+                render_scale,
+                1.0,
+            ));
+        } else {
+            let origin = Point::from((-output_geo.loc.x, -output_geo.loc.y));
+            elements.extend(
+                window
+                    .render_elements::<WaylandSurfaceRenderElement<R>>(
+                        renderer,
+                        loc,
+                        render_scale,
+                        1.0,
+                    )
+                    .into_iter()
+                    .map(|element| {
+                        OutputRenderElements::ZoomedSurface(RescaleRenderElement::from_element(
+                            element, origin, zoom,
+                        ))
+                    }),
+            );
+        }
     }
 
     // Borders render below windows (visible as a ring around each).
     elements.extend(borders);
-    elements.extend(layer_elements(renderer, [WlrLayer::Bottom, WlrLayer::Background]));
+    elements.extend(layer_elements(
+        renderer,
+        [WlrLayer::Bottom, WlrLayer::Background],
+    ));
     elements
 }

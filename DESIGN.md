@@ -69,6 +69,18 @@ same invariant *structurally*:
 5. **No offscreen intermediates.** Effects that render windows into a texture
    first (blur, rounded-corner passes) are a chance to resample; Phase 5
    effects must keep intermediate framebuffers pixel-aligned too.
+6. **The camera is the one sanctioned resampling path.** Windows (and their
+   borders) live on a world-coordinate canvas viewed through a per-space
+   camera (`takhti.set_view`): `screen = (world − offset) · zoom`. The offset
+   is integer physical, so pan and the identity view keep every element on
+   the grid; at `zoom ≠ 1` windows render through `RescaleRenderElement`
+   (GPU-resampled — meant to be transient, e.g. a zoomable-canvas WM's
+   overview). Layer-shell, compositor UI, and the cursor are screen-fixed.
+   Input stays in screen space; window hit-testing inverts the camera and
+   compensates the surface origin handed to the seat, so clients receive
+   exact buffer-local coordinates at any pan/zoom. Follow-up for crisp
+   steady-state zoom: re-advertise the effective fractional scale at rest so
+   clients re-render at native density.
 
 Currently one scale applies to all outputs (`takhti.settings { scale }`);
 per-output scale is a later, local change — it belongs in the existing
@@ -98,14 +110,31 @@ output logical positions for mixed-scale multi-head need a placement policy.
 - The default WM (`resources/wm.lua`, preloaded as module `"wm"`) implements
   workspaces 1-9 + dwindle tiling + focus cycling purely on this API. It is loaded
   only when config `require`s it — replaceable wholesale.
+- A second dogfood WM ships as module `"zoomer"` (`resources/zoomer.lua`,
+  after ~chld/shko): floating windows on a pannable/zoomable canvas with
+  planes, Mod+drag move/resize, Mod+scroll zoom — proof the pointer-hook,
+  grab, raise, and camera mechanisms suffice for a wholly different paradigm.
+- Configs are modifier-agnostic: binds and pointer hooks say `Mod`
+  (`"Mod+Return"`, `ev.mods.mod`), and `takhti.settings { mod = "alt" }`
+  declares once what Mod means (default: super).
 
 ### Lua API surface (target; grows per phase)
 
 ```lua
-takhti.settings { gaps = 8, focus_follows_mouse = true }
-takhti.bind("Super+Return", function() takhti.spawn("foot") end)
-takhti.bind("Super+1", "workspace 1")            -- built-in actions as strings
+takhti.settings { gaps = 8, mod = "super", focus_follows_mouse = true }
+takhti.bind("Mod+Return", function() takhti.spawn("foot") end)
+takhti.bind("Mod+1", "workspace 1")              -- built-in actions as strings
 takhti.on_window_open(function(win) ... end)      -- hooks: open/close/focus/output/...
+win:raise()                                       -- restack above all others
+takhti.on_pointer_button(function(ev) ... end)    -- return true to consume; ev has
+takhti.on_pointer_axis(function(ev) ... end)      --   world/screen pos, mods, window
+takhti.on_pointer_enter(function(win) ... end)    -- hover changed window; leave fires
+takhti.on_pointer_leave(function(win) ... end)    --   first, suppressed during grabs
+takhti.on_window_request(function(ev) ... end)    -- client fullscreen/maximize/minimize/
+                                                  --   move/resize asks; consume or default
+takhti.grab_pointer(on_motion [, on_release])     -- route motion to Lua until release
+takhti.set_view { x = 0, y = 0, zoom = 1.5 }      -- camera over the window canvas
+takhti.view(); takhti.pointer()                   -- camera + pointer (world & screen)
 takhti.rule { app_id = "mpv", floating = true }   -- rules as data or as functions
 takhti.register_layout("fibonacci", fn)           -- custom layout, same trait as built-ins
 takhti.workspace(2).layout = "scrolling"
@@ -121,9 +150,11 @@ takhti.on_reload(snapshot_fn, restore_fn)         -- hot reload with state persi
   Lua config with binds/spawn/hooks/settings. *Accept: spawn two terminals, they tile, keybinds work.*
 - **Phase 2: TTY.** DRM/GBM/libinput/libseat session backend, multi-output, output config from Lua,
   full redraw state machine, presentation-time. *Accept: daily-drive login session.*
-- **Phase 3: WM depth.** All five layouts incl. scrolling (niri column model), workspaces
-  (per-output, niri-style dynamic), window rules engine, floating, fullscreen/maximize,
-  layer-shell, focus-follows-mouse, drag/resize grabs.
+- **Phase 3: WM depth.** Mechanism sufficient to build any layout in Lua (per the
+  policy split, layouts themselves are Lua libraries, not core features): fullscreen/
+  maximize request plumbing ✓, focus-follows-mouse events ✓, xdg move/resize grab
+  forwarding ✓, per-output workspace support in `wm.lua`, layer-shell ✓, z-order ✓,
+  pointer hooks + Lua grabs ✓, view camera ✓ (dogfooded by the `zoomer` module).
 - **Phase 4: IPC + tooling.** JSON socket (`takhti msg`), event stream, `takhti.ipc.serve`,
   LuaLS meta files, hot reload with snapshot/restore.
 - **Phase 5: Eye-candy.** Borders/rounded/shadows (shader elements), dual-kawase blur,

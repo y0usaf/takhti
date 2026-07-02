@@ -29,7 +29,10 @@ pub fn snap_scale(scale: f64) -> f64 {
 /// the achievable buffer sizes are `round(n * s)` for integer `n`. Returns
 /// the logical size to configure the client with and the physical size its
 /// buffer will have — layout bookkeeping must use the latter.
-pub fn configure_size(size: Size<i32, Physical>, scale: f64) -> (Size<i32, Logical>, Size<i32, Physical>) {
+pub fn configure_size(
+    size: Size<i32, Physical>,
+    scale: f64,
+) -> (Size<i32, Logical>, Size<i32, Physical>) {
     let logical: Size<i32, Logical> = Size::from((
         ((size.w as f64 / scale).round() as i32).max(1),
         ((size.h as f64 / scale).round() as i32).max(1),
@@ -64,7 +67,10 @@ pub fn logical_size_to_physical(size: Size<f64, Logical>, scale: f64) -> Size<i3
 /// A logical point (client-reported offsets like `Window::geometry().loc` or
 /// layer-shell positions) in physical pixels, rounded to the grid.
 pub fn logical_point_to_physical(pos: Point<f64, Logical>, scale: f64) -> Point<i32, Physical> {
-    Point::from(((pos.x * scale).round() as i32, (pos.y * scale).round() as i32))
+    Point::from((
+        (pos.x * scale).round() as i32,
+        (pos.y * scale).round() as i32,
+    ))
 }
 
 /// A physical rect in logical coordinates, for protocol objects that demand
@@ -126,8 +132,8 @@ mod tests {
         let (logical, physical) = configure_size(Size::from((127, 127)), 1.25);
         assert_eq!(logical.w, 102); // round(127 / 1.25) = round(101.6)
         assert_eq!(physical.w, 128); // round(102 * 1.25) = round(127.5)
-        // The invariant that matters: achievable == round(logical * scale),
-        // i.e. the client's buffer covers exactly this many pixels.
+                                     // The invariant that matters: achievable == round(logical * scale),
+                                     // i.e. the client's buffer covers exactly this many pixels.
         assert_eq!(physical.w, (logical.w as f64 * 1.25).round() as i32);
         assert_eq!(physical.h, (logical.h as f64 * 1.25).round() as i32);
     }

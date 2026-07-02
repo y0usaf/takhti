@@ -8,7 +8,7 @@
 --
 --   local wm = require("wm")
 --   wm.gaps = 4
---   takhti.bind("Alt+1", function() wm.switch(1) end)
+--   takhti.bind("Mod+1", function() wm.switch(1) end)
 
 local M = {
   gaps = 8,
@@ -16,6 +16,8 @@ local M = {
   active = 1,
   -- workspaces[i] = ordered list of window objects
   workspaces = {},
+  -- fullscreen[window id] = true: excluded from tiling, covers its output.
+  fullscreen = {},
 }
 
 for i = 1, M.workspace_count do
@@ -39,13 +41,18 @@ local function remove(list, win)
 end
 
 -- Classic dwindle: split the remaining area along its longer side.
+-- Fullscreen windows keep their output-covering geometry and stay on top.
 function M.arrange()
   local area = takhti.usable_area()
-  local wins = M.workspaces[M.active]
-  local n = #wins
-  if n == 0 then
-    return
+  local wins, full = {}, {}
+  for _, win in ipairs(M.workspaces[M.active]) do
+    if M.fullscreen[win:id()] then
+      table.insert(full, win)
+    else
+      table.insert(wins, win)
+    end
   end
+  local n = #wins
   local g = M.gaps
   local x, y = area.x + g, area.y + g
   local w, h = area.w - 2 * g, area.h - 2 * g
@@ -64,6 +71,54 @@ function M.arrange()
       h = h - half - g
     end
     win:show()
+  end
+  for _, win in ipairs(full) do
+    win:show()
+    win:raise()
+  end
+end
+
+-- The output containing the window's center, or the named/first output.
+local function output_for(win, name)
+  local outs = takhti.outputs()
+  for _, o in ipairs(outs) do
+    if o.name == name then
+      return o
+    end
+  end
+  local geo = win:geometry()
+  if geo then
+    local cx, cy = geo.x + geo.w / 2, geo.y + geo.h / 2
+    for _, o in ipairs(outs) do
+      if cx >= o.x and cx < o.x + o.w and cy >= o.y and cy < o.y + o.h then
+        return o
+      end
+    end
+  end
+  return outs[1]
+end
+
+function M.set_fullscreen(win, on, output_name)
+  if on then
+    local o = output_for(win, output_name)
+    if not o then
+      return
+    end
+    M.fullscreen[win:id()] = true
+    win:set_fullscreen(true)
+    win:set_geometry(o.x, o.y, o.w, o.h)
+    win:focus()
+  else
+    M.fullscreen[win:id()] = nil
+    win:set_fullscreen(false)
+  end
+  M.arrange()
+end
+
+function M.toggle_fullscreen()
+  local win = takhti.focused_window()
+  if win then
+    M.set_fullscreen(win, not M.fullscreen[win:id()])
   end
 end
 
@@ -133,11 +188,17 @@ end
 
 takhti.on_window_open(function(win)
   table.insert(M.workspaces[M.active], win)
-  M.arrange()
+  if win:is_fullscreen() then
+    -- The client asked for fullscreen before mapping (mpv, games).
+    M.set_fullscreen(win, true)
+  else
+    M.arrange()
+  end
   win:focus()
 end)
 
 takhti.on_window_close(function(win)
+  M.fullscreen[win:id()] = nil
   for i = 1, M.workspace_count do
     remove(M.workspaces[i], win)
   end
@@ -145,6 +206,20 @@ takhti.on_window_close(function(win)
   local last = M.workspaces[M.active][#M.workspaces[M.active]]
   if last then
     last:focus()
+  end
+end)
+
+-- Client state requests (F11, video players, …). Consuming the event (truthy
+-- return) makes this config responsible for responding; maximize/minimize
+-- fall through to the native default (ack / ignore) — a tiled layout has no
+-- separate maximized or minimized state.
+takhti.on_window_request(function(ev)
+  if ev.type == "fullscreen" then
+    M.set_fullscreen(ev.window, true, ev.output)
+    return true
+  elseif ev.type == "unfullscreen" then
+    M.set_fullscreen(ev.window, false)
+    return true
   end
 end)
 

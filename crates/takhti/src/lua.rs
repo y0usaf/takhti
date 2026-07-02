@@ -22,6 +22,7 @@ use crate::input::Action;
 
 const DEFAULT_CONFIG: &str = include_str!("../../../resources/init.lua");
 const WM_LUA: &str = include_str!("../../../resources/wm.lua");
+const ZOOMER_LUA: &str = include_str!("../../../resources/zoomer.lua");
 
 /// Which of a connector's advertised modes to use, parsed from
 /// `"<preferred|max|WxH>[@<Hz|max>]"` (e.g. "max@max", "2560x1440@144").
@@ -93,6 +94,118 @@ pub struct DisplaySettings {
     pub resolution: Resolution,
 }
 
+/// xkb keymap + key-repeat settings: `settings.keyboard`. Empty strings mean
+/// the xkb defaults (including `XKB_DEFAULT_*` environment variables).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyboardSettings {
+    pub rules: String,
+    pub model: String,
+    /// Comma-separated layouts, e.g. "us,de".
+    pub layout: String,
+    /// Comma-separated variants, one per layout.
+    pub variant: String,
+    /// Comma-separated xkb options, e.g. "caps:escape,grp:alt_shift_toggle".
+    pub options: Option<String>,
+    /// Milliseconds a key is held before it starts repeating.
+    pub repeat_delay: i32,
+    /// Repeats per second once repeating.
+    pub repeat_rate: i32,
+}
+
+impl Default for KeyboardSettings {
+    fn default() -> Self {
+        Self {
+            rules: String::new(),
+            model: String::new(),
+            layout: String::new(),
+            variant: String::new(),
+            options: None,
+            repeat_delay: 600,
+            repeat_rate: 25,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccelProfile {
+    Flat,
+    Adaptive,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollMethod {
+    NoScroll,
+    TwoFinger,
+    Edge,
+    OnButtonDown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClickMethod {
+    ButtonAreas,
+    Clickfinger,
+}
+
+/// libinput device settings: `settings.touchpad` / `settings.mouse` apply by
+/// device class, `settings.devices["<libinput name>"]` overrides per device.
+/// Every field is optional; unset fields use the device's libinput default,
+/// so removing a line from the config and reloading actually undoes it.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct InputDeviceSettings {
+    pub disabled: Option<bool>,
+    /// Touchpads only: send no events while an external mouse is plugged in.
+    pub disabled_on_external_mouse: Option<bool>,
+    pub tap: Option<bool>,
+    pub tap_drag: Option<bool>,
+    pub tap_drag_lock: Option<bool>,
+    pub natural_scroll: Option<bool>,
+    /// -1.0 (slowest) ..= 1.0 (fastest).
+    pub accel_speed: Option<f64>,
+    pub accel_profile: Option<AccelProfile>,
+    /// Disable-while-typing (touchpads).
+    pub dwt: Option<bool>,
+    pub left_handed: Option<bool>,
+    pub middle_emulation: Option<bool>,
+    pub scroll_method: Option<ScrollMethod>,
+    /// Kernel button code held to scroll with `scroll_method = "on_button_down"`.
+    pub scroll_button: Option<u32>,
+    pub click_method: Option<ClickMethod>,
+}
+
+impl InputDeviceSettings {
+    /// Layer per-device overrides on top of class (touchpad/mouse) settings.
+    pub fn overridden_by(&self, over: &Self) -> Self {
+        Self {
+            disabled: over.disabled.or(self.disabled),
+            disabled_on_external_mouse: over
+                .disabled_on_external_mouse
+                .or(self.disabled_on_external_mouse),
+            tap: over.tap.or(self.tap),
+            tap_drag: over.tap_drag.or(self.tap_drag),
+            tap_drag_lock: over.tap_drag_lock.or(self.tap_drag_lock),
+            natural_scroll: over.natural_scroll.or(self.natural_scroll),
+            accel_speed: over.accel_speed.or(self.accel_speed),
+            accel_profile: over.accel_profile.or(self.accel_profile),
+            dwt: over.dwt.or(self.dwt),
+            left_handed: over.left_handed.or(self.left_handed),
+            middle_emulation: over.middle_emulation.or(self.middle_emulation),
+            scroll_method: over.scroll_method.or(self.scroll_method),
+            scroll_button: over.scroll_button.or(self.scroll_button),
+            click_method: over.click_method.or(self.click_method),
+        }
+    }
+}
+
+/// The libinput-relevant slice of `Settings`, grouped for change detection
+/// (the tty backend re-applies it to every device only when it changed).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct InputConfig {
+    pub touchpad: InputDeviceSettings,
+    pub mouse: InputDeviceSettings,
+    /// Per-device overrides, keyed by the libinput device name.
+    pub devices: HashMap<String, InputDeviceSettings>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Settings {
     /// Gap between windows, in physical pixels (like all Lua geometry).
@@ -110,6 +223,15 @@ pub struct Settings {
     pub border_width: i32,
     pub border_focused: [f32; 4],
     pub border_unfocused: [f32; 4],
+    /// What "Mod" means in bind combos and pointer-event mods.
+    pub mod_key: crate::input::ModKey,
+    /// Focus the window under the pointer as it moves (sloppy focus:
+    /// leaving onto empty space keeps focus). Default: click-to-focus.
+    pub focus_follows_mouse: bool,
+    /// xkb keymap + key repeat, applied to the seat keyboard.
+    pub keyboard: KeyboardSettings,
+    /// libinput device config (tty backend).
+    pub input: InputConfig,
 }
 
 impl Settings {
@@ -132,8 +254,87 @@ impl Default for Settings {
             border_width: 2,
             border_focused: parse_color("#7aa2f7").unwrap(),
             border_unfocused: parse_color("#3b4261").unwrap(),
+            mod_key: crate::input::ModKey::default(),
+            focus_follows_mouse: false,
+            keyboard: KeyboardSettings::default(),
+            input: InputConfig::default(),
         }
     }
+}
+
+/// Parse a `settings.touchpad`-shaped Lua table; `label` names it in warnings.
+fn parse_input_device(table: &Table, label: &str) -> InputDeviceSettings {
+    let mut s = InputDeviceSettings::default();
+    if let Ok(Some(v)) = table.get::<Option<bool>>("disabled") {
+        s.disabled = Some(v);
+    }
+    if let Ok(Some(v)) = table.get::<Option<bool>>("disabled_on_external_mouse") {
+        s.disabled_on_external_mouse = Some(v);
+    }
+    if let Ok(Some(v)) = table.get::<Option<bool>>("tap") {
+        s.tap = Some(v);
+    }
+    if let Ok(Some(v)) = table.get::<Option<bool>>("tap_drag") {
+        s.tap_drag = Some(v);
+    }
+    if let Ok(Some(v)) = table.get::<Option<bool>>("tap_drag_lock") {
+        s.tap_drag_lock = Some(v);
+    }
+    if let Ok(Some(v)) = table.get::<Option<bool>>("natural_scroll") {
+        s.natural_scroll = Some(v);
+    }
+    if let Ok(v) = table.get::<f64>("accel_speed") {
+        if v.is_finite() {
+            s.accel_speed = Some(v.clamp(-1.0, 1.0));
+        } else {
+            warn!("{label}.accel_speed: expected a number in -1..=1");
+        }
+    }
+    if let Ok(v) = table.get::<String>("accel_profile") {
+        match v.as_str() {
+            "flat" => s.accel_profile = Some(AccelProfile::Flat),
+            "adaptive" => s.accel_profile = Some(AccelProfile::Adaptive),
+            _ => warn!(
+                "{label}.accel_profile: unknown profile {v:?} \
+                 (expected \"flat\" or \"adaptive\")"
+            ),
+        }
+    }
+    if let Ok(Some(v)) = table.get::<Option<bool>>("dwt") {
+        s.dwt = Some(v);
+    }
+    if let Ok(Some(v)) = table.get::<Option<bool>>("left_handed") {
+        s.left_handed = Some(v);
+    }
+    if let Ok(Some(v)) = table.get::<Option<bool>>("middle_emulation") {
+        s.middle_emulation = Some(v);
+    }
+    if let Ok(v) = table.get::<String>("scroll_method") {
+        match v.as_str() {
+            "none" => s.scroll_method = Some(ScrollMethod::NoScroll),
+            "two_finger" => s.scroll_method = Some(ScrollMethod::TwoFinger),
+            "edge" => s.scroll_method = Some(ScrollMethod::Edge),
+            "on_button_down" => s.scroll_method = Some(ScrollMethod::OnButtonDown),
+            _ => warn!(
+                "{label}.scroll_method: unknown method {v:?} (expected \"none\", \
+                 \"two_finger\", \"edge\", or \"on_button_down\")"
+            ),
+        }
+    }
+    if let Ok(v) = table.get::<u32>("scroll_button") {
+        s.scroll_button = Some(v);
+    }
+    if let Ok(v) = table.get::<String>("click_method") {
+        match v.as_str() {
+            "button_areas" => s.click_method = Some(ClickMethod::ButtonAreas),
+            "clickfinger" => s.click_method = Some(ClickMethod::Clickfinger),
+            _ => warn!(
+                "{label}.click_method: unknown method {v:?} \
+                 (expected \"button_areas\" or \"clickfinger\")"
+            ),
+        }
+    }
+    s
 }
 
 /// Parse "#rrggbb" or "#rrggbbaa" into premultiplied RGBA floats.
@@ -172,6 +373,10 @@ pub struct WinProps {
     pub geometry: Option<(i32, i32, i32, i32)>,
     pub mapped: bool,
     pub focused: bool,
+    /// xdg state the client last acked: what the window *is*, not what a
+    /// pending request asks for (requests arrive via `on_window_request`).
+    pub fullscreen: bool,
+    pub maximized: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -183,7 +388,7 @@ pub struct OutputProps {
     pub usable: (i32, i32, i32, i32),
 }
 
-/// Queued window operations, applied by the core after each Lua entry.
+/// Queued operations, applied by the core after each Lua entry.
 #[derive(Debug, Clone)]
 pub enum WindowOp {
     SetGeometry(u64, (i32, i32, i32, i32)),
@@ -193,6 +398,54 @@ pub enum WindowOp {
     /// Clear keyboard focus entirely (e.g. switching to an empty workspace).
     ClearFocus,
     Close(u64),
+    /// Restack on top of all other windows.
+    Raise(u64),
+    /// Set/unset the xdg Fullscreen state flag. Only the protocol state:
+    /// geometry stays policy — pair with `SetGeometry` to actually cover an
+    /// output.
+    SetFullscreen(u64, bool),
+    /// Set/unset the xdg Maximized state flag; geometry stays policy.
+    SetMaximized(u64, bool),
+    /// Move the camera: world offset (physical pixels) and zoom factor.
+    SetView(i32, i32, f64),
+}
+
+/// Data for a pointer button event handed to `on_pointer_button` hooks.
+pub struct PointerButtonData {
+    pub button: u32,
+    pub pressed: bool,
+    /// Pointer position in world coordinates (where windows live).
+    pub world: (f64, f64),
+    /// Pointer position in screen coordinates (raw output space).
+    pub screen: (f64, f64),
+    /// (alt, ctrl, shift, super)
+    pub mods: (bool, bool, bool, bool),
+    /// Window under the pointer, if any.
+    pub window: Option<u64>,
+}
+
+/// Data for a pointer axis (scroll) event handed to `on_pointer_axis` hooks.
+pub struct PointerAxisData {
+    pub dx: f64,
+    pub dy: f64,
+    pub world: (f64, f64),
+    pub screen: (f64, f64),
+    pub mods: (bool, bool, bool, bool),
+    pub window: Option<u64>,
+}
+
+/// Kernel input codes for the common mouse buttons, as Lua-friendly names.
+fn button_name(code: u32) -> Option<&'static str> {
+    Some(match code {
+        0x110 => "left",
+        0x111 => "right",
+        0x112 => "middle",
+        0x113 => "side",
+        0x114 => "extra",
+        0x115 => "forward",
+        0x116 => "back",
+        _ => return None,
+    })
 }
 
 pub struct PendingBind {
@@ -208,6 +461,18 @@ struct Hooks {
     window_close: Vec<RegistryKey>,
     focus_change: Vec<RegistryKey>,
     outputs_changed: Vec<RegistryKey>,
+    pointer_button: Vec<RegistryKey>,
+    pointer_axis: Vec<RegistryKey>,
+    window_request: Vec<RegistryKey>,
+    pointer_enter: Vec<RegistryKey>,
+    pointer_leave: Vec<RegistryKey>,
+}
+
+/// A Lua-initiated pointer grab (`takhti.grab_pointer`): motion is routed to
+/// the handler instead of clients until every button is released.
+struct PointerGrab {
+    motion: RegistryKey,
+    release: Option<RegistryKey>,
 }
 
 #[derive(Default)]
@@ -219,7 +484,13 @@ struct Shared {
     ops: RefCell<Vec<WindowOp>>,
     windows: RefCell<HashMap<u64, WinProps>>,
     outputs: RefCell<Vec<OutputProps>>,
+    /// Camera snapshot (x, y, zoom); set_view updates it eagerly so reads
+    /// within the same Lua entry observe pending changes.
+    view: RefCell<(i32, i32, f64)>,
+    /// Pointer snapshot: (world x, world y, screen x, screen y).
+    pointer: RefCell<(f64, f64, f64, f64)>,
     hooks: RefCell<Hooks>,
+    grab: RefCell<Option<PointerGrab>>,
 }
 
 // ─── Window userdata ──────────────────────────────────────────────────────────
@@ -252,23 +523,26 @@ impl UserData for LuaWindow {
         methods.add_method("title", |_, this, ()| Ok(this.props().title));
         methods.add_method("is_mapped", |_, this, ()| Ok(this.props().mapped));
         methods.add_method("is_focused", |_, this, ()| Ok(this.props().focused));
-        methods.add_method("geometry", |lua, this, ()| {
-            match this.props().geometry {
-                Some((x, y, w, h)) => {
-                    let t = lua.create_table()?;
-                    t.set("x", x)?;
-                    t.set("y", y)?;
-                    t.set("w", w)?;
-                    t.set("h", h)?;
-                    Ok(Value::Table(t))
-                }
-                None => Ok(Value::Nil),
+        methods.add_method("is_fullscreen", |_, this, ()| Ok(this.props().fullscreen));
+        methods.add_method("is_maximized", |_, this, ()| Ok(this.props().maximized));
+        methods.add_method("geometry", |lua, this, ()| match this.props().geometry {
+            Some((x, y, w, h)) => {
+                let t = lua.create_table()?;
+                t.set("x", x)?;
+                t.set("y", y)?;
+                t.set("w", w)?;
+                t.set("h", h)?;
+                Ok(Value::Table(t))
             }
+            None => Ok(Value::Nil),
         });
-        methods.add_method("set_geometry", |_, this, (x, y, w, h): (i32, i32, i32, i32)| {
-            this.op(WindowOp::SetGeometry(this.id, (x, y, w.max(1), h.max(1))));
-            Ok(())
-        });
+        methods.add_method(
+            "set_geometry",
+            |_, this, (x, y, w, h): (i32, i32, i32, i32)| {
+                this.op(WindowOp::SetGeometry(this.id, (x, y, w.max(1), h.max(1))));
+                Ok(())
+            },
+        );
         methods.add_method("show", |_, this, ()| {
             this.op(WindowOp::Show(this.id));
             Ok(())
@@ -279,6 +553,18 @@ impl UserData for LuaWindow {
         });
         methods.add_method("focus", |_, this, ()| {
             this.op(WindowOp::Focus(this.id));
+            Ok(())
+        });
+        methods.add_method("raise", |_, this, ()| {
+            this.op(WindowOp::Raise(this.id));
+            Ok(())
+        });
+        methods.add_method("set_fullscreen", |_, this, on: bool| {
+            this.op(WindowOp::SetFullscreen(this.id, on));
+            Ok(())
+        });
+        methods.add_method("set_maximized", |_, this, on: bool| {
+            this.op(WindowOp::SetMaximized(this.id, on));
             Ok(())
         });
         methods.add_method("close", |_, this, ()| {
@@ -304,6 +590,7 @@ impl LuaRuntime {
     pub fn new() -> mlua::Result<Self> {
         let lua = Lua::new();
         let shared = Rc::new(Shared::default());
+        *shared.view.borrow_mut() = (0, 0, 1.0);
 
         let takhti = lua.create_table()?;
 
@@ -340,6 +627,65 @@ impl LuaRuntime {
                 if let Ok(scale) = table.get::<f64>("scale") {
                     settings.scale = scale;
                 }
+                if let Ok(kb) = table.get::<Table>("keyboard") {
+                    let k = &mut settings.keyboard;
+                    if let Ok(v) = kb.get::<String>("rules") {
+                        k.rules = v;
+                    }
+                    if let Ok(v) = kb.get::<String>("model") {
+                        k.model = v;
+                    }
+                    if let Ok(v) = kb.get::<String>("layout") {
+                        k.layout = v;
+                    }
+                    if let Ok(v) = kb.get::<String>("variant") {
+                        k.variant = v;
+                    }
+                    if let Ok(v) = kb.get::<String>("options") {
+                        k.options = Some(v);
+                    }
+                    if let Ok(v) = kb.get::<i32>("repeat_delay") {
+                        k.repeat_delay = v.max(1);
+                    }
+                    if let Ok(v) = kb.get::<i32>("repeat_rate") {
+                        k.repeat_rate = v.max(0);
+                    }
+                }
+                if let Ok(t) = table.get::<Table>("touchpad") {
+                    settings.input.touchpad = parse_input_device(&t, "settings.touchpad");
+                }
+                if let Ok(t) = table.get::<Table>("mouse") {
+                    settings.input.mouse = parse_input_device(&t, "settings.mouse");
+                }
+                if let Ok(devices) = table.get::<Table>("devices") {
+                    settings.input.devices.clear();
+                    for pair in devices.pairs::<String, Table>() {
+                        let Ok((name, t)) = pair else {
+                            warn!(
+                                "settings.devices: expected \
+                                 {{ [\"<libinput device name>\"] = {{...}} }} entries"
+                            );
+                            continue;
+                        };
+                        let parsed = parse_input_device(&t, &format!("settings.devices[{name:?}]"));
+                        settings.input.devices.insert(name, parsed);
+                    }
+                }
+                // Option<bool>: mlua maps a missing key to `false` for plain
+                // bool (Lua truthiness), which would reset the setting on
+                // every later partial settings call.
+                if let Ok(Some(ffm)) = table.get::<Option<bool>>("focus_follows_mouse") {
+                    settings.focus_follows_mouse = ffm;
+                }
+                if let Ok(m) = table.get::<String>("mod") {
+                    match crate::input::ModKey::parse(&m) {
+                        Some(key) => settings.mod_key = key,
+                        None => warn!(
+                            "settings.mod: unknown modifier {m:?} \
+                             (expected \"super\", \"alt\", \"ctrl\", or \"shift\")"
+                        ),
+                    }
+                }
                 if let Ok(size) = table.get::<Table>("winit_size") {
                     settings.winit_size = (
                         size.get(1).unwrap_or(settings.winit_size.0),
@@ -371,32 +717,38 @@ impl LuaRuntime {
         let s = shared.clone();
         takhti.set(
             "bind",
-            lua.create_function(move |lua, (combo, action, desc): (String, Value, Option<String>)| {
-                let action = match action {
-                    Value::String(name) => match Action::parse(&name.to_string_lossy()) {
-                        Ok(action) => action,
-                        Err(err) => {
-                            warn!("takhti.bind({combo:?}): {err:#}");
+            lua.create_function(
+                move |lua, (combo, action, desc): (String, Value, Option<String>)| {
+                    let action = match action {
+                        Value::String(name) => match Action::parse(&name.to_string_lossy()) {
+                            Ok(action) => action,
+                            Err(err) => {
+                                warn!("takhti.bind({combo:?}): {err:#}");
+                                return Ok(());
+                            }
+                        },
+                        Value::Function(func) => {
+                            let key = lua.create_registry_value(func)?;
+                            let mut fns = s.bind_fns.borrow_mut();
+                            fns.push(key);
+                            Action::LuaFn(fns.len() - 1)
+                        }
+                        other => {
+                            warn!(
+                                "takhti.bind({combo:?}): expected string or function, got {}",
+                                other.type_name()
+                            );
                             return Ok(());
                         }
-                    },
-                    Value::Function(func) => {
-                        let key = lua.create_registry_value(func)?;
-                        let mut fns = s.bind_fns.borrow_mut();
-                        fns.push(key);
-                        Action::LuaFn(fns.len() - 1)
-                    }
-                    other => {
-                        warn!(
-                            "takhti.bind({combo:?}): expected string or function, got {}",
-                            other.type_name()
-                        );
-                        return Ok(());
-                    }
-                };
-                s.binds.borrow_mut().push(PendingBind { combo, action, desc });
-                Ok(())
-            })?,
+                    };
+                    s.binds.borrow_mut().push(PendingBind {
+                        combo,
+                        action,
+                        desc,
+                    });
+                    Ok(())
+                },
+            )?,
         )?;
 
         // takhti.spawn("foot")
@@ -506,12 +858,99 @@ impl LuaRuntime {
             })?,
         )?;
 
+        // takhti.view() -> {x, y, zoom} — the camera over the window canvas.
+        let s = shared.clone();
+        takhti.set(
+            "view",
+            lua.create_function(move |lua, ()| {
+                let (x, y, zoom) = *s.view.borrow();
+                let t = lua.create_table()?;
+                t.set("x", x)?;
+                t.set("y", y)?;
+                t.set("zoom", zoom)?;
+                Ok(t)
+            })?,
+        )?;
+
+        // takhti.set_view { x = ..., y = ..., zoom = ... } — omitted fields
+        // keep their current value. screen = (world - offset) * zoom.
+        let s = shared.clone();
+        takhti.set(
+            "set_view",
+            lua.create_function(move |_, table: Table| {
+                let (mut x, mut y, mut zoom) = *s.view.borrow();
+                if let Ok(v) = table.get::<i32>("x") {
+                    x = v;
+                }
+                if let Ok(v) = table.get::<i32>("y") {
+                    y = v;
+                }
+                if let Ok(v) = table.get::<f64>("zoom") {
+                    if v.is_finite() && v > 0.0 {
+                        zoom = v.clamp(1.0 / 16.0, 16.0);
+                    } else {
+                        warn!("set_view: ignoring invalid zoom {v:?}");
+                    }
+                }
+                *s.view.borrow_mut() = (x, y, zoom);
+                s.ops.borrow_mut().push(WindowOp::SetView(x, y, zoom));
+                Ok(())
+            })?,
+        )?;
+
+        // takhti.pointer() -> {x, y, sx, sy} — world and screen position.
+        let s = shared.clone();
+        takhti.set(
+            "pointer",
+            lua.create_function(move |lua, ()| {
+                let (x, y, sx, sy) = *s.pointer.borrow();
+                let t = lua.create_table()?;
+                t.set("x", x)?;
+                t.set("y", y)?;
+                t.set("sx", sx)?;
+                t.set("sy", sy)?;
+                Ok(t)
+            })?,
+        )?;
+
+        // takhti.grab_pointer(on_motion [, on_release]) — route pointer
+        // motion to Lua (in world coordinates) until every button is
+        // released. Typically called from an on_pointer_button hook that
+        // returns true to consume the click.
+        let s = shared.clone();
+        takhti.set(
+            "grab_pointer",
+            lua.create_function(
+                move |lua, (motion, release): (Function, Option<Function>)| {
+                    let motion = lua.create_registry_value(motion)?;
+                    let release = release.map(|f| lua.create_registry_value(f)).transpose()?;
+                    *s.grab.borrow_mut() = Some(PointerGrab { motion, release });
+                    Ok(())
+                },
+            )?,
+        )?;
+
+        // takhti.ungrab_pointer() — end the grab without the release callback.
+        let s = shared.clone();
+        takhti.set(
+            "ungrab_pointer",
+            lua.create_function(move |_, ()| {
+                s.grab.borrow_mut().take();
+                Ok(())
+            })?,
+        )?;
+
         // Event hooks.
         for (name, field) in [
             ("on_window_open", 0usize),
             ("on_window_close", 1),
             ("on_focus_change", 2),
             ("on_outputs_changed", 3),
+            ("on_pointer_button", 4),
+            ("on_pointer_axis", 5),
+            ("on_window_request", 6),
+            ("on_pointer_enter", 7),
+            ("on_pointer_leave", 8),
         ] {
             let s = shared.clone();
             takhti.set(
@@ -523,7 +962,12 @@ impl LuaRuntime {
                         0 => hooks.window_open.push(key),
                         1 => hooks.window_close.push(key),
                         2 => hooks.focus_change.push(key),
-                        _ => hooks.outputs_changed.push(key),
+                        3 => hooks.outputs_changed.push(key),
+                        4 => hooks.pointer_button.push(key),
+                        5 => hooks.pointer_axis.push(key),
+                        6 => hooks.window_request.push(key),
+                        7 => hooks.pointer_enter.push(key),
+                        _ => hooks.pointer_leave.push(key),
                     }
                     Ok(())
                 })?,
@@ -542,6 +986,12 @@ impl LuaRuntime {
             "wm",
             lua.create_function(|lua, _: Value| {
                 lua.load(WM_LUA).set_name("wm.lua").eval::<Value>()
+            })?,
+        )?;
+        preload.set(
+            "zoomer",
+            lua.create_function(|lua, _: Value| {
+                lua.load(ZOOMER_LUA).set_name("zoomer.lua").eval::<Value>()
             })?,
         )?;
 
@@ -570,8 +1020,16 @@ impl LuaRuntime {
     // ── Snapshot sync (called by the core before Lua entries) ──
 
     /// Replace the snapshot. Returns true if the outputs part changed.
-    pub fn sync(&self, windows: HashMap<u64, WinProps>, outputs: Vec<OutputProps>) -> bool {
+    pub fn sync(
+        &self,
+        windows: HashMap<u64, WinProps>,
+        outputs: Vec<OutputProps>,
+        view: (i32, i32, f64),
+        pointer: (f64, f64, f64, f64),
+    ) -> bool {
         *self.shared.windows.borrow_mut() = windows;
+        *self.shared.view.borrow_mut() = view;
+        *self.shared.pointer.borrow_mut() = pointer;
         let changed = *self.shared.outputs.borrow() != outputs;
         *self.shared.outputs.borrow_mut() = outputs;
         changed
@@ -601,6 +1059,27 @@ impl LuaRuntime {
         !self.shared.hooks.borrow().window_close.is_empty()
     }
 
+    pub fn has_pointer_button_hooks(&self) -> bool {
+        !self.shared.hooks.borrow().pointer_button.is_empty()
+    }
+
+    pub fn has_pointer_axis_hooks(&self) -> bool {
+        !self.shared.hooks.borrow().pointer_axis.is_empty()
+    }
+
+    pub fn has_window_request_hooks(&self) -> bool {
+        !self.shared.hooks.borrow().window_request.is_empty()
+    }
+
+    pub fn has_hover_hooks(&self) -> bool {
+        let hooks = self.shared.hooks.borrow();
+        !hooks.pointer_enter.is_empty() || !hooks.pointer_leave.is_empty()
+    }
+
+    pub fn pointer_grab_active(&self) -> bool {
+        self.shared.grab.borrow().is_some()
+    }
+
     // ── Event emission ──
 
     pub fn call_bind(&mut self, idx: usize) {
@@ -628,6 +1107,14 @@ impl LuaRuntime {
 
     pub fn emit_window_close(&mut self, id: u64) {
         self.emit_window_event(id, |hooks| &hooks.window_close, "on_window_close");
+    }
+
+    pub fn emit_pointer_enter(&mut self, id: u64) {
+        self.emit_window_event(id, |hooks| &hooks.pointer_enter, "on_pointer_enter");
+    }
+
+    pub fn emit_pointer_leave(&mut self, id: u64) {
+        self.emit_window_event(id, |hooks| &hooks.pointer_leave, "on_pointer_leave");
     }
 
     pub fn emit_focus_change(&mut self, id: Option<u64>) {
@@ -663,6 +1150,208 @@ impl LuaRuntime {
             if let Err(err) = func.call::<()>(()) {
                 warn!("Lua on_outputs_changed error: {err}");
             }
+        }
+    }
+
+    /// Shared fields of pointer event tables: positions, modifiers, window.
+    fn pointer_event_table(
+        &self,
+        world: (f64, f64),
+        screen: (f64, f64),
+        mods: (bool, bool, bool, bool),
+        window: Option<u64>,
+    ) -> mlua::Result<Table> {
+        let t = self.lua.create_table()?;
+        t.set("x", world.0)?;
+        t.set("y", world.1)?;
+        t.set("sx", screen.0)?;
+        t.set("sy", screen.1)?;
+        let m = self.lua.create_table()?;
+        m.set("alt", mods.0)?;
+        m.set("ctrl", mods.1)?;
+        m.set("shift", mods.2)?;
+        m.set("super", mods.3)?;
+        // "mod" mirrors whichever of the above `settings.mod` selects, so
+        // configs stay modifier-agnostic.
+        let mod_held = match self.shared.settings.borrow().mod_key {
+            crate::input::ModKey::Alt => mods.0,
+            crate::input::ModKey::Ctrl => mods.1,
+            crate::input::ModKey::Shift => mods.2,
+            crate::input::ModKey::Super => mods.3,
+        };
+        m.set("mod", mod_held)?;
+        t.set("mods", m)?;
+        if let Some(id) = window {
+            t.set(
+                "window",
+                LuaWindow {
+                    id,
+                    shared: self.shared.clone(),
+                },
+            )?;
+        }
+        Ok(t)
+    }
+
+    /// Run event hooks with `ev`; a truthy return from any consumes the event.
+    fn emit_consumable_hooks(
+        &mut self,
+        select: impl Fn(&Hooks) -> &Vec<RegistryKey>,
+        ev: Table,
+        name: &str,
+    ) -> bool {
+        let funcs: Vec<Function> = {
+            let hooks = self.shared.hooks.borrow();
+            select(&hooks)
+                .iter()
+                .filter_map(|k| self.lua.registry_value::<Function>(k).ok())
+                .collect()
+        };
+        let mut consumed = false;
+        for func in funcs {
+            match func.call::<Value>(&ev) {
+                Ok(value) => {
+                    if !matches!(value, Value::Nil | Value::Boolean(false)) {
+                        consumed = true;
+                    }
+                }
+                Err(err) => warn!("Lua {name} error: {err}"),
+            }
+        }
+        consumed
+    }
+
+    /// Returns true if a hook consumed the event (don't forward to clients).
+    pub fn emit_pointer_button(&mut self, data: PointerButtonData) -> bool {
+        let ev = match self.pointer_event_table(data.world, data.screen, data.mods, data.window) {
+            Ok(ev) => ev,
+            Err(err) => {
+                warn!("Lua on_pointer_button error: {err}");
+                return false;
+            }
+        };
+        let ok = match button_name(data.button) {
+            Some(name) => ev.set("button", name),
+            None => ev.set("button", data.button),
+        }
+        .and_then(|()| ev.set("pressed", data.pressed));
+        if let Err(err) = ok {
+            warn!("Lua on_pointer_button error: {err}");
+            return false;
+        }
+        self.emit_consumable_hooks(|hooks| &hooks.pointer_button, ev, "on_pointer_button")
+    }
+
+    /// Returns true if a hook consumed the event (don't forward to clients).
+    pub fn emit_pointer_axis(&mut self, data: PointerAxisData) -> bool {
+        let ev = match self.pointer_event_table(data.world, data.screen, data.mods, data.window) {
+            Ok(ev) => ev,
+            Err(err) => {
+                warn!("Lua on_pointer_axis error: {err}");
+                return false;
+            }
+        };
+        if let Err(err) = ev.set("dx", data.dx).and_then(|()| ev.set("dy", data.dy)) {
+            warn!("Lua on_pointer_axis error: {err}");
+            return false;
+        }
+        self.emit_consumable_hooks(|hooks| &hooks.pointer_axis, ev, "on_pointer_axis")
+    }
+
+    /// A client asked for a state change or an interactive drag (`ev.type`
+    /// is "fullscreen", "unfullscreen", "maximize", "unmaximize", "minimize",
+    /// "move", or "resize"; `ev.output` names the output a fullscreen request
+    /// targeted; `ev.edges` names the edge/corner a resize drags, e.g.
+    /// "bottom_right"). Returns true if a hook consumed the request — the
+    /// consumer takes over responding, typically via `win:set_fullscreen` +
+    /// `win:set_geometry`, or `takhti.grab_pointer` for move/resize;
+    /// unconsumed requests get the native default (drags are dropped).
+    pub fn emit_window_request(
+        &mut self,
+        id: u64,
+        kind: &str,
+        output: Option<String>,
+        edges: Option<&str>,
+    ) -> bool {
+        let ev = match self.lua.create_table() {
+            Ok(t) => t,
+            Err(err) => {
+                warn!("Lua on_window_request error: {err}");
+                return false;
+            }
+        };
+        let ok = ev
+            .set(
+                "window",
+                LuaWindow {
+                    id,
+                    shared: self.shared.clone(),
+                },
+            )
+            .and_then(|()| ev.set("type", kind))
+            .and_then(|()| match output {
+                Some(name) => ev.set("output", name),
+                None => Ok(()),
+            })
+            .and_then(|()| match edges {
+                Some(edges) => ev.set("edges", edges),
+                None => Ok(()),
+            });
+        if let Err(err) = ok {
+            warn!("Lua on_window_request error: {err}");
+            return false;
+        }
+        self.emit_consumable_hooks(|hooks| &hooks.window_request, ev, "on_window_request")
+    }
+
+    /// Feed a motion event to the active grab (world coordinates + deltas).
+    pub fn emit_grab_motion(&mut self, x: f64, y: f64, dx: f64, dy: f64) {
+        let func = {
+            let grab = self.shared.grab.borrow();
+            let Some(grab) = grab.as_ref() else { return };
+            self.lua.registry_value::<Function>(&grab.motion)
+        };
+        let func = match func {
+            Ok(func) => func,
+            Err(err) => {
+                warn!("Lua grab registry error: {err}");
+                return;
+            }
+        };
+        let ev = match self.lua.create_table() {
+            Ok(t) => t,
+            Err(err) => {
+                warn!("Lua grab motion error: {err}");
+                return;
+            }
+        };
+        let ok = ev
+            .set("x", x)
+            .and_then(|()| ev.set("y", y))
+            .and_then(|()| ev.set("dx", dx))
+            .and_then(|()| ev.set("dy", dy));
+        if let Err(err) = ok {
+            warn!("Lua grab motion error: {err}");
+            return;
+        }
+        if let Err(err) = func.call::<()>(ev) {
+            warn!("Lua grab motion error: {err}");
+        }
+    }
+
+    /// End the active grab (button release), running its release callback.
+    pub fn end_pointer_grab(&mut self) {
+        let Some(grab) = self.shared.grab.borrow_mut().take() else {
+            return;
+        };
+        let Some(release) = grab.release else { return };
+        match self.lua.registry_value::<Function>(&release) {
+            Ok(func) => {
+                if let Err(err) = func.call::<()>(()) {
+                    warn!("Lua grab release error: {err}");
+                }
+            }
+            Err(err) => warn!("Lua grab registry error: {err}"),
         }
     }
 
@@ -709,6 +1398,83 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hover_api_registers() {
+        let rt = LuaRuntime::new().unwrap();
+        rt.lua
+            .load(
+                r#"
+                takhti.settings { focus_follows_mouse = true }
+                takhti.on_pointer_enter(function(win) end)
+                takhti.on_pointer_leave(function(win) end)
+                "#,
+            )
+            .exec()
+            .unwrap();
+        assert!(rt.settings().focus_follows_mouse);
+        assert!(rt.has_hover_hooks());
+    }
+
+    #[test]
+    fn parse_input_settings() {
+        let rt = LuaRuntime::new().unwrap();
+        rt.lua
+            .load(
+                r#"
+                takhti.settings {
+                  keyboard = {
+                    layout = "us,de",
+                    options = "caps:escape",
+                    repeat_delay = 300,
+                    repeat_rate = 50,
+                  },
+                  touchpad = {
+                    tap = true,
+                    natural_scroll = true,
+                    accel_speed = 2.0, -- clamped to 1.0
+                    accel_profile = "flat",
+                    dwt = false,
+                  },
+                  mouse = {
+                    accel_profile = "bogus", -- warns, stays unset
+                    scroll_method = "on_button_down",
+                    scroll_button = 274,
+                  },
+                  devices = {
+                    ["Some Fancy Mouse"] = { natural_scroll = true },
+                  },
+                }
+                "#,
+            )
+            .exec()
+            .unwrap();
+        let s = rt.settings();
+        assert_eq!(s.keyboard.layout, "us,de");
+        assert_eq!(s.keyboard.variant, "");
+        assert_eq!(s.keyboard.options.as_deref(), Some("caps:escape"));
+        assert_eq!(s.keyboard.repeat_delay, 300);
+        assert_eq!(s.keyboard.repeat_rate, 50);
+
+        let tp = s.input.touchpad;
+        assert_eq!(tp.tap, Some(true));
+        assert_eq!(tp.natural_scroll, Some(true));
+        assert_eq!(tp.accel_speed, Some(1.0));
+        assert_eq!(tp.accel_profile, Some(AccelProfile::Flat));
+        assert_eq!(tp.dwt, Some(false));
+        assert_eq!(tp.left_handed, None);
+
+        let mouse = s.input.mouse;
+        assert_eq!(mouse.accel_profile, None);
+        assert_eq!(mouse.scroll_method, Some(ScrollMethod::OnButtonDown));
+        assert_eq!(mouse.scroll_button, Some(274));
+
+        // Per-device tables override class settings field-by-field.
+        let per = &s.input.devices["Some Fancy Mouse"];
+        let merged = mouse.overridden_by(per);
+        assert_eq!(merged.natural_scroll, Some(true));
+        assert_eq!(merged.scroll_button, Some(274));
+    }
+
+    #[test]
     fn parse_resolution() {
         let parse = |s: &str| s.parse::<Resolution>();
         let res = |size, refresh| Resolution { size, refresh };
@@ -717,7 +1483,10 @@ mod tests {
             parse("preferred"),
             Ok(res(SizeSetting::Preferred, RefreshSetting::Auto))
         );
-        assert_eq!(parse("max"), Ok(res(SizeSetting::Max, RefreshSetting::Auto)));
+        assert_eq!(
+            parse("max"),
+            Ok(res(SizeSetting::Max, RefreshSetting::Auto))
+        );
         assert_eq!(
             parse("max@max"),
             Ok(res(SizeSetting::Max, RefreshSetting::Max))
@@ -728,18 +1497,33 @@ mod tests {
         );
         assert_eq!(
             parse("2560x1440@144"),
-            Ok(res(SizeSetting::Exact(2560, 1440), RefreshSetting::Exact(144_000)))
+            Ok(res(
+                SizeSetting::Exact(2560, 1440),
+                RefreshSetting::Exact(144_000)
+            ))
         );
         assert_eq!(
             parse("1920x1080@59.94"),
-            Ok(res(SizeSetting::Exact(1920, 1080), RefreshSetting::Exact(59_940)))
+            Ok(res(
+                SizeSetting::Exact(1920, 1080),
+                RefreshSetting::Exact(59_940)
+            ))
         );
         assert_eq!(
             parse("preferred@max"),
             Ok(res(SizeSetting::Preferred, RefreshSetting::Max))
         );
 
-        for bad in ["", "1920", "1920x", "x1080", "1920x1080@", "max@", "60@max", "1920x1080@-60"] {
+        for bad in [
+            "",
+            "1920",
+            "1920x",
+            "x1080",
+            "1920x1080@",
+            "max@",
+            "60@max",
+            "1920x1080@-60",
+        ] {
             assert_eq!(parse(bad), Err(()), "{bad:?} should not parse");
         }
     }

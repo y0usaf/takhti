@@ -11,4 +11,4 @@ echo "launching $BIN (logs: /tmp/takhti.log)"
 # case-insensitive, so `shell` clobbers the corrected SHELL when nu loads its
 # environment. Unset it.
 LOGIN_SHELL="$(getent passwd "$(id -un)" | cut -d: -f7)"
-exec nix develop --command env -u shell SHELL="${LOGIN_SHELL:-$SHELL}" "$BIN" --backend tty >/tmp/takhti.log 2>&1
+exec nix develop --command env -u shell SHELL="${LOGIN_SHELL:-$SHELL}" "$BIN" --backend tty "$@" >/tmp/takhti.log 2>&1

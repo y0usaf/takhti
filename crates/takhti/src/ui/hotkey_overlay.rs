@@ -5,13 +5,12 @@ use smithay::backend::renderer::element::memory::{
     MemoryRenderBuffer, MemoryRenderBufferRenderElement,
 };
 use smithay::backend::renderer::element::Kind;
-use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Physical, Size};
 
 use super::text::{Canvas, Fonts, Span};
 use super::{ACCENT, BG, FG, KEY_CHIP};
 use crate::input::{Action, Bind};
-use crate::render::OutputRenderElements;
+use crate::render::{OutputRenderElements, TakhtiRenderer};
 
 const PADDING: i32 = 28;
 const BORDER: i32 = 4;
@@ -27,7 +26,10 @@ pub struct HotkeyOverlay {
 
 impl HotkeyOverlay {
     pub fn new() -> Self {
-        Self { open: false, buffer: None }
+        Self {
+            open: false,
+            buffer: None,
+        }
     }
 
     pub fn is_open(&self) -> bool {
@@ -47,13 +49,13 @@ impl HotkeyOverlay {
         self.buffer = None;
     }
 
-    pub fn render_elements(
+    pub fn render_elements<R: TakhtiRenderer>(
         &mut self,
         fonts: &Fonts,
-        renderer: &mut GlesRenderer,
+        renderer: &mut R,
         output_size: Size<i32, Physical>,
         binds: &[Bind],
-        elements: &mut Vec<OutputRenderElements>,
+        elements: &mut Vec<OutputRenderElements<R>>,
     ) {
         if !self.open {
             return;
@@ -160,7 +162,12 @@ fn render(fonts: &Fonts, binds: &[Bind]) -> (MemoryRenderBuffer, Size<i32, Physi
     for (key, action) in &rows {
         let (kw, _) = fonts.measure(&[Span::key(key, ROW_SIZE, FG, KEY_CHIP)]);
         // Right-align keys against the column edge, niri-style.
-        canvas.draw_spans(fonts, x0 + key_w - kw, y, &[Span::key(key, ROW_SIZE, FG, KEY_CHIP)]);
+        canvas.draw_spans(
+            fonts,
+            x0 + key_w - kw,
+            y,
+            &[Span::key(key, ROW_SIZE, FG, KEY_CHIP)],
+        );
         canvas.draw_spans(
             fonts,
             x0 + key_w + COLUMN_GAP,

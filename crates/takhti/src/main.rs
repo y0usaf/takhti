@@ -35,6 +35,11 @@ struct Args {
     /// Backend: auto, winit (nested window), or tty (DRM, run from a VT)
     #[arg(long, default_value = "auto")]
     backend: String,
+    /// Force the render GPU for the tty backend (a /dev/dri/card* or
+    /// renderD* path). Default: the boot GPU; outputs on other GPUs still
+    /// work via buffer copies.
+    #[arg(long)]
+    drm_device: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -105,15 +110,12 @@ fn main() -> Result<()> {
     let use_winit = match args.backend.as_str() {
         "winit" => true,
         "tty" => false,
-        _ => {
-            std::env::var_os("WAYLAND_DISPLAY").is_some()
-                || std::env::var_os("DISPLAY").is_some()
-        }
+        _ => std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some(),
     };
     if use_winit {
         backend::winit::init(&mut takhti)?;
     } else {
-        backend::tty::init(&mut takhti)?;
+        backend::tty::init(&mut takhti, args.drm_device.as_deref())?;
     }
 
     std::env::set_var("WAYLAND_DISPLAY", &socket_name);

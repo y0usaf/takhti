@@ -7,7 +7,6 @@ use smithay::backend::renderer::element::memory::{
     MemoryRenderBuffer, MemoryRenderBufferRenderElement,
 };
 use smithay::backend::renderer::element::Kind;
-use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Physical, Point, Transform};
 use tracing::warn;
 use xcursor::parser::{parse_xcursor, Image};
@@ -26,29 +25,28 @@ impl Cursor {
             .and_then(|s| s.parse().ok())
             .unwrap_or(24);
 
-        let frame = load_image(&theme, size)
-            .map(|image| {
-                let buffer = MemoryRenderBuffer::from_slice(
-                    &image.pixels_rgba,
-                    Fourcc::Abgr8888,
-                    (image.width as i32, image.height as i32),
-                    1,
-                    Transform::Normal,
-                    None,
-                );
-                (buffer, Point::from((image.xhot as i32, image.yhot as i32)))
-            });
+        let frame = load_image(&theme, size).map(|image| {
+            let buffer = MemoryRenderBuffer::from_slice(
+                &image.pixels_rgba,
+                Fourcc::Abgr8888,
+                (image.width as i32, image.height as i32),
+                1,
+                Transform::Normal,
+                None,
+            );
+            (buffer, Point::from((image.xhot as i32, image.yhot as i32)))
+        });
         if frame.is_none() {
             warn!("no xcursor theme found; using block cursor");
         }
         Self { frame }
     }
 
-    pub fn element(
+    pub fn element<R: crate::render::TakhtiRenderer>(
         &self,
-        renderer: &mut GlesRenderer,
+        renderer: &mut R,
         pos: Point<f64, Physical>,
-    ) -> Option<MemoryRenderBufferRenderElement<GlesRenderer>> {
+    ) -> Option<MemoryRenderBufferRenderElement<R>> {
         let (buffer, hotspot) = self.frame.as_ref()?;
         // xcursor images are raw pixels; the hotspot is physical. Snap the
         // final position to the grid so the cursor image stays crisp.
@@ -74,7 +72,10 @@ fn load_image(theme: &str, size: u32) -> Option<Image> {
         .load_icon("default")
         .or_else(|| theme.load_icon("left_ptr"))?;
     let mut data = Vec::new();
-    std::fs::File::open(path).ok()?.read_to_end(&mut data).ok()?;
+    std::fs::File::open(path)
+        .ok()?
+        .read_to_end(&mut data)
+        .ok()?;
     let images = parse_xcursor(&data)?;
     // Pick the size closest to the requested one.
     images

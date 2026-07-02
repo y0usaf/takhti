@@ -8,12 +8,11 @@ use smithay::backend::renderer::element::memory::{
 };
 use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
 use smithay::backend::renderer::element::Kind;
-use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Physical, Size};
 
 use super::text::{Fonts, Span};
 use super::{BACKDROP, BG, FG, KEY_CHIP, RED};
-use crate::render::OutputRenderElements;
+use crate::render::{OutputRenderElements, TakhtiRenderer};
 
 const PADDING: i32 = 32;
 const BORDER: i32 = 8;
@@ -46,12 +45,12 @@ impl ExitConfirmDialog {
         self.open = false;
     }
 
-    pub fn render_elements(
+    pub fn render_elements<R: TakhtiRenderer>(
         &mut self,
         fonts: &Fonts,
-        renderer: &mut GlesRenderer,
+        renderer: &mut R,
         output_size: Size<i32, Physical>,
-        elements: &mut Vec<OutputRenderElements>,
+        elements: &mut Vec<OutputRenderElements<R>>,
     ) {
         if !self.open {
             return;
@@ -77,19 +76,26 @@ impl ExitConfirmDialog {
 
         // SolidColorBuffer sizes are Logical-typed in smithay; ours are pixel
         // sizes rendered at scale 1.0, so the retype is a no-op.
-        self.backdrop.update((output_size.w, output_size.h), BACKDROP);
-        elements.push(OutputRenderElements::Solid(SolidColorRenderElement::from_buffer(
-            &self.backdrop,
-            (0, 0),
-            1.0,
-            1.0,
-            Kind::Unspecified,
-        )));
+        self.backdrop
+            .update((output_size.w, output_size.h), BACKDROP);
+        elements.push(OutputRenderElements::Solid(
+            SolidColorRenderElement::from_buffer(
+                &self.backdrop,
+                (0, 0),
+                1.0,
+                1.0,
+                Kind::Unspecified,
+            ),
+        ));
     }
 }
 
 fn render(fonts: &Fonts) -> (MemoryRenderBuffer, Size<i32, Physical>) {
-    let line1 = [Span::sans("Are you sure you want to exit takhti?", FONT_SIZE, FG)];
+    let line1 = [Span::sans(
+        "Are you sure you want to exit takhti?",
+        FONT_SIZE,
+        FG,
+    )];
     let line2 = [
         Span::sans("Press ", FONT_SIZE, FG),
         Span::key(" Enter ", FONT_SIZE, FG, KEY_CHIP),

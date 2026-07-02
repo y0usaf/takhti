@@ -7,12 +7,11 @@ use smithay::backend::renderer::element::memory::{
     MemoryRenderBuffer, MemoryRenderBufferRenderElement,
 };
 use smithay::backend::renderer::element::Kind;
-use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Physical, Size};
 
 use super::text::{Canvas, Fonts, Span};
 use super::{BG, FG, RED};
-use crate::render::OutputRenderElements;
+use crate::render::{OutputRenderElements, TakhtiRenderer};
 
 const PADDING: i32 = 16;
 const BORDER: i32 = 4;
@@ -48,14 +47,16 @@ impl ConfigErrorNotification {
         self.shown_at = None;
     }
 
-    pub fn render_elements(
+    pub fn render_elements<R: TakhtiRenderer>(
         &mut self,
         fonts: &Fonts,
-        renderer: &mut GlesRenderer,
+        renderer: &mut R,
         output_size: Size<i32, Physical>,
-        elements: &mut Vec<OutputRenderElements>,
+        elements: &mut Vec<OutputRenderElements<R>>,
     ) {
-        let Some(shown_at) = self.shown_at else { return };
+        let Some(shown_at) = self.shown_at else {
+            return;
+        };
         if shown_at.elapsed() > Self::TIMEOUT {
             self.shown_at = None;
             return;

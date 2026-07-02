@@ -7,7 +7,6 @@ mod exit_confirm_dialog;
 mod hotkey_overlay;
 pub mod text;
 
-use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Physical, Size};
 use tracing::warn;
 
@@ -16,7 +15,7 @@ pub use exit_confirm_dialog::ExitConfirmDialog;
 pub use hotkey_overlay::HotkeyOverlay;
 
 use crate::input::Bind;
-use crate::render::OutputRenderElements;
+use crate::render::{OutputRenderElements, TakhtiRenderer};
 use text::Fonts;
 
 // Shared palette (premultiplied RGBA).
@@ -54,12 +53,12 @@ impl Ui {
 
     /// Build render elements for one output, topmost first (callers prepend
     /// these before window content). Coordinates are output-local.
-    pub fn render_elements(
+    pub fn render_elements<R: TakhtiRenderer>(
         &mut self,
-        renderer: &mut GlesRenderer,
+        renderer: &mut R,
         output_size: Size<i32, Physical>,
         binds: &[Bind],
-    ) -> Vec<OutputRenderElements> {
+    ) -> Vec<OutputRenderElements<R>> {
         let Some(fonts) = &self.fonts else {
             return Vec::new();
         };

@@ -1,16 +1,19 @@
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::renderer::utils::{on_commit_buffer_handler, with_renderer_surface_state};
-use smithay::backend::renderer::ImportDma;
-use smithay::desktop::{layer_map_for_output, LayerSurface, PopupKind, Window, WindowSurfaceType};
+use smithay::desktop::{
+    find_popup_root_surface, layer_map_for_output, LayerSurface, PopupKeyboardGrab, PopupKind,
+    PopupPointerGrab, PopupUngrabStrategy, Window, WindowSurfaceType,
+};
 use smithay::output::Output;
-use smithay::input::pointer::CursorImageStatus;
+use smithay::input::pointer::{CursorImageStatus, Focus, MotionEvent, PointerHandle};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, Resource};
-use smithay::utils::{Serial, SERIAL_COUNTER};
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
+use smithay::utils::{Logical, Point, Serial, SERIAL_COUNTER};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::reexports::calloop::Interest;
 use smithay::wayland::compositor::{
@@ -23,8 +26,12 @@ use smithay::wayland::dmabuf::{
 };
 use smithay::wayland::drm_syncobj::{DrmSyncobjCachedState, DrmSyncobjHandler, DrmSyncobjState};
 use smithay::wayland::output::OutputHandler;
+use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraintsHandler};
 use smithay::wayland::selection::data_device::{
     set_data_device_focus, DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler,
+};
+use smithay::wayland::selection::primary_selection::{
+    set_primary_focus, PrimarySelectionHandler, PrimarySelectionState,
 };
 use smithay::wayland::selection::SelectionHandler;
 use smithay::wayland::shell::wlr_layer::{
@@ -48,8 +55,9 @@ use smithay::wayland::fractional_scale::FractionalScaleHandler;
 use smithay::{
     delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_drm_syncobj,
     delegate_fractional_scale, delegate_kde_decoration, delegate_layer_shell, delegate_output,
-    delegate_seat, delegate_shm, delegate_viewporter, delegate_xdg_decoration,
-    delegate_xdg_shell,
+    delegate_pointer_constraints, delegate_presentation, delegate_primary_selection,
+    delegate_relative_pointer, delegate_seat, delegate_shm, delegate_viewporter,
+    delegate_xdg_decoration, delegate_xdg_shell,
 };
 use tracing::{debug, trace, warn};
 
@@ -94,7 +102,9 @@ impl CompositorHandler for Takhti {
                     })
             });
             let Some(dmabuf) = maybe_dmabuf else { return };
-            let Some(client) = surface.client() else { return };
+            let Some(client) = surface.client() else {
+                return;
+            };
             let sid = surface.id().protocol_id();
             let unblock = move |takhti: &mut Takhti| {
                 let dh = takhti.display_handle.clone();
@@ -104,11 +114,13 @@ impl CompositorHandler for Takhti {
             };
             if let Some(acquire_point) = acquire_point {
                 if let Ok((blocker, source)) = acquire_point.generate_blocker() {
-                    let res = takhti.loop_handle.insert_source(source, move |_, _, takhti| {
-                        debug!("surface {sid}: acquire fence signaled, unblocking");
-                        unblock(takhti);
-                        Ok(())
-                    });
+                    let res = takhti
+                        .loop_handle
+                        .insert_source(source, move |_, _, takhti| {
+                            debug!("surface {sid}: acquire fence signaled, unblocking");
+                            unblock(takhti);
+                            Ok(())
+                        });
                     if res.is_ok() {
                         debug!("surface {sid}: commit blocked on explicit-sync acquire point");
                         add_blocker(surface, blocker);
@@ -120,11 +132,13 @@ impl CompositorHandler for Takhti {
                 warn!("surface {sid}: failed to create acquire point blocker");
             }
             if let Ok((blocker, source)) = dmabuf.generate_blocker(Interest::READ) {
-                let res = takhti.loop_handle.insert_source(source, move |_, _, takhti| {
-                    debug!("surface {sid}: implicit fences signaled, unblocking");
-                    unblock(takhti);
-                    Ok(())
-                });
+                let res = takhti
+                    .loop_handle
+                    .insert_source(source, move |_, _, takhti| {
+                        debug!("surface {sid}: implicit fences signaled, unblocking");
+                        unblock(takhti);
+                        Ok(())
+                    });
                 if res.is_ok() {
                     debug!("surface {sid}: commit blocked on implicit dmabuf fences");
                     add_blocker(surface, blocker);
@@ -186,8 +200,44 @@ impl XdgShellHandler for Takhti {
         }
     }
 
-    fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {
-        // Popup grabs: Phase 3.
+    fn grab(&mut self, surface: PopupSurface, seat: WlSeat, serial: Serial) {
+        let seat: Seat<Self> = Seat::from_resource(&seat).unwrap();
+        let kind = PopupKind::Xdg(surface);
+        let Ok(root) = find_popup_root_surface(&kind) else {
+            return;
+        };
+        // KeyboardFocus is a plain WlSurface, so the root works directly as
+        // the grab's focus whether it belongs to a window or a layer surface.
+        let mut grab = match self.popups.grab_popup(root, kind, &seat, serial) {
+            Ok(grab) => grab,
+            Err(err) => {
+                debug!("denying popup grab: {err:?}");
+                return;
+            }
+        };
+        // If either device is grabbed by someone else (a Lua drag, another
+        // popup chain), refuse and dismiss rather than stacking grabs.
+        if let Some(keyboard) = seat.get_keyboard() {
+            if keyboard.is_grabbed()
+                && !(keyboard.has_grab(serial)
+                    || keyboard.has_grab(grab.previous_serial().unwrap_or(serial)))
+            {
+                grab.ungrab(PopupUngrabStrategy::All);
+                return;
+            }
+            keyboard.set_focus(self, grab.current_grab(), serial);
+            keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+        }
+        if let Some(pointer) = seat.get_pointer() {
+            if pointer.is_grabbed()
+                && !(pointer.has_grab(serial)
+                    || pointer.has_grab(grab.previous_serial().unwrap_or_else(|| grab.serial())))
+            {
+                grab.ungrab(PopupUngrabStrategy::All);
+                return;
+            }
+            pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
+        }
     }
 
     fn reposition_request(
@@ -203,13 +253,86 @@ impl XdgShellHandler for Takhti {
         surface.send_repositioned(token);
     }
 
-    fn move_request(&mut self, _surface: ToplevelSurface, _seat: WlSeat, _serial: Serial) {
-        // Interactive move: Phase 3 (grabs).
+    // ── Interactive move/resize: forwarded to the Lua grab machinery ──
+    //
+    // A client-initiated drag (CSD titlebar, resize edge) arrives while the
+    // triggering button is held, i.e. while smithay's implicit click grab
+    // pins pointer focus to the client. The request becomes an
+    // `on_window_request` event; a hook that consumes it typically calls
+    // `takhti.grab_pointer`, and the core then releases the click grab so
+    // motion routes to Lua instead of the client. Unconsumed requests are
+    // dropped — a tiled layout has no native drag, and ignoring is the
+    // protocol-sanctioned response.
+
+    fn move_request(&mut self, surface: ToplevelSurface, seat: WlSeat, serial: Serial) {
+        let seat: Seat<Self> = Seat::from_resource(&seat).unwrap();
+        self.interactive_request(&surface, &seat, serial, "move", None);
     }
 
+    fn resize_request(
+        &mut self,
+        surface: ToplevelSurface,
+        seat: WlSeat,
+        serial: Serial,
+        edges: xdg_toplevel::ResizeEdge,
+    ) {
+        let seat: Seat<Self> = Seat::from_resource(&seat).unwrap();
+        self.interactive_request(&surface, &seat, serial, "resize", Some(edges_name(edges)));
+    }
+
+    // ── Window-state requests: Lua policy first, native default second ──
+    //
+    // Each request becomes an `on_window_request` event; a hook returning
+    // truthy consumes it and takes over responding (its queued ops carry the
+    // configures). Unconsumed requests fall back to the native default.
+    // Unmapped toplevels have no Lua id yet, so they always take the default;
+    // policy can still react on map via `win:is_fullscreen()`.
+
     fn maximize_request(&mut self, surface: ToplevelSurface) {
-        // Tiled layout: just ack so the client doesn't hang waiting.
-        surface.send_configure();
+        let id = self.window_id_for_surface(surface.wl_surface());
+        let consumed = id.is_some_and(|id| self.emit_window_request(id, "maximize", None, None));
+        if !consumed {
+            // Tiled layout: just ack so the client doesn't hang waiting.
+            surface.send_configure();
+        }
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        let id = self.window_id_for_surface(surface.wl_surface());
+        let consumed = id.is_some_and(|id| self.emit_window_request(id, "unmaximize", None, None));
+        if !consumed {
+            surface.send_configure();
+        }
+    }
+
+    fn fullscreen_request(&mut self, surface: ToplevelSurface, wl_output: Option<WlOutput>) {
+        let id = self.window_id_for_surface(surface.wl_surface());
+        let output_name = wl_output
+            .as_ref()
+            .and_then(Output::from_resource)
+            .map(|o| o.name());
+        let consumed =
+            id.is_some_and(|id| self.emit_window_request(id, "fullscreen", output_name, None));
+        if !consumed {
+            self.fullscreen_default(&surface, wl_output.as_ref(), id);
+        }
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        let id = self.window_id_for_surface(surface.wl_surface());
+        let consumed =
+            id.is_some_and(|id| self.emit_window_request(id, "unfullscreen", None, None));
+        if !consumed {
+            self.unfullscreen_default(&surface, id);
+        }
+    }
+
+    fn minimize_request(&mut self, surface: ToplevelSurface) {
+        // xdg-shell has no minimized state to ack; ignoring unconsumed
+        // requests is the protocol-sanctioned response.
+        if let Some(id) = self.window_id_for_surface(surface.wl_surface()) {
+            self.emit_window_request(id, "minimize", None, None);
+        }
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
@@ -289,7 +412,151 @@ impl KdeDecorationHandler for Takhti {
 }
 delegate_kde_decoration!(Takhti);
 
+/// Lua-friendly name for the edge/corner an xdg resize drags.
+fn edges_name(edges: xdg_toplevel::ResizeEdge) -> &'static str {
+    use xdg_toplevel::ResizeEdge;
+    match edges {
+        ResizeEdge::Top => "top",
+        ResizeEdge::Bottom => "bottom",
+        ResizeEdge::Left => "left",
+        ResizeEdge::Right => "right",
+        ResizeEdge::TopLeft => "top_left",
+        ResizeEdge::TopRight => "top_right",
+        ResizeEdge::BottomLeft => "bottom_left",
+        ResizeEdge::BottomRight => "bottom_right",
+        _ => "none",
+    }
+}
+
 impl Takhti {
+    /// Shared tail of xdg move/resize requests. The serial must match the
+    /// live click grab (a stale serial means the button is already up) and
+    /// the grab must have started on the requesting client, else the request
+    /// is dropped. It is then handed to Lua; if a hook consumed it by
+    /// starting a pointer grab, smithay's click grab is released and client
+    /// focus cleared, so the client sees a leave (ending its local drag
+    /// state) and subsequent motion routes to the Lua grab (input.rs).
+    fn interactive_request(
+        &mut self,
+        surface: &ToplevelSurface,
+        seat: &Seat<Self>,
+        serial: Serial,
+        kind: &str,
+        edges: Option<&str>,
+    ) {
+        let Some(pointer) = seat.get_pointer() else {
+            return;
+        };
+        if !pointer.has_grab(serial) {
+            return;
+        }
+        let same_client = pointer
+            .grab_start_data()
+            .and_then(|data| data.focus)
+            .is_some_and(|(focus, _)| focus.id().same_client_as(&surface.wl_surface().id()));
+        if !same_client {
+            return;
+        }
+        let Some(id) = self.window_id_for_surface(surface.wl_surface()) else {
+            return;
+        };
+        let consumed = self.emit_window_request(id, kind, None, edges);
+        if consumed && self.lua.pointer_grab_active() {
+            let serial = SERIAL_COUNTER.next_serial();
+            let time = self.start_time.elapsed().as_millis() as u32;
+            pointer.unset_grab(self, serial, time);
+            let location = pointer.current_location();
+            pointer.motion(
+                self,
+                None,
+                &MotionEvent {
+                    location,
+                    serial,
+                    time,
+                },
+            );
+            pointer.frame(self);
+        }
+    }
+
+    /// Native fullscreen default: honor the request on the client-requested
+    /// output, else the window's own, else the first. Remembers the previous
+    /// geometry so `unfullscreen_default` can restore it.
+    fn fullscreen_default(
+        &mut self,
+        toplevel: &ToplevelSurface,
+        wl_output: Option<&WlOutput>,
+        id: Option<u64>,
+    ) {
+        let window = self.window_for_surface(toplevel.wl_surface());
+        let output = wl_output
+            .and_then(Output::from_resource)
+            .or_else(|| {
+                let geo = window
+                    .as_ref()
+                    .and_then(|w| self.space.element_geometry(w))?;
+                // Windows live in world space, outputs in screen space.
+                let center = self.space.world_to_screen(Point::from((
+                    geo.loc.x as f64 + geo.size.w as f64 / 2.0,
+                    geo.loc.y as f64 + geo.size.h as f64 / 2.0,
+                )));
+                self.space.output_under(center).cloned()
+            })
+            .or_else(|| self.space.outputs().next().cloned());
+        let output_geo = output.as_ref().and_then(|o| self.space.output_geometry(o));
+        let Some(output_geo) = output_geo else {
+            // Nowhere to honor it; still ack so the client doesn't hang.
+            toplevel.send_configure();
+            return;
+        };
+        if let (Some(id), Some(window)) = (id, &window) {
+            if let Some(prev) = self.space.element_geometry(window) {
+                self.fullscreen_prev.entry(id).or_insert(prev);
+            }
+        }
+        let (logical, _achievable) =
+            crate::coords::configure_size(output_geo.size, self.space.scale());
+        toplevel.with_pending_state(|state| {
+            state.states.set(xdg_toplevel::State::Fullscreen);
+            state.size = Some(logical);
+            state.fullscreen_output = wl_output.cloned();
+        });
+        if toplevel.is_initial_configure_sent() {
+            toplevel.send_pending_configure();
+        }
+        // Only place mapped windows; unmapped ones get their spot on map.
+        if let (Some(_), Some(window)) = (id, window) {
+            let world = self.space.screen_to_world(output_geo.loc.to_f64());
+            self.space.map_element(
+                window.clone(),
+                Point::from((world.x.round() as i32, world.y.round() as i32)),
+            );
+            self.space.raise_element(&window);
+        }
+        self.queue_redraw_all();
+    }
+
+    /// Undo `fullscreen_default`: drop the state and restore the remembered
+    /// geometry (no remembered geometry → the client picks its own size).
+    fn unfullscreen_default(&mut self, toplevel: &ToplevelSurface, id: Option<u64>) {
+        let prev = id.and_then(|id| self.fullscreen_prev.remove(&id));
+        let scale = self.space.scale();
+        toplevel.with_pending_state(|state| {
+            state.states.unset(xdg_toplevel::State::Fullscreen);
+            state.fullscreen_output = None;
+            state.size = prev.map(|geo| crate::coords::configure_size(geo.size, scale).0);
+        });
+        if toplevel.is_initial_configure_sent() {
+            toplevel.send_pending_configure();
+        }
+        if let Some(prev) = prev {
+            if let Some(window) = self.window_for_surface(toplevel.wl_surface()) {
+                self.space.map_element(window, prev.loc);
+            }
+        }
+        self.queue_redraw_all();
+    }
+
     /// Handle the xdg-shell part of a surface commit: initial configure and
     /// mapping toplevels once their first buffer arrives.
     pub fn xdg_shell_handle_commit(&mut self, surface: &WlSurface) {
@@ -312,9 +579,8 @@ impl Takhti {
                 toplevel.send_configure();
                 return;
             }
-            let has_buffer =
-                with_renderer_surface_state(surface, |state| state.buffer().is_some())
-                    .unwrap_or(false);
+            let has_buffer = with_renderer_surface_state(surface, |state| state.buffer().is_some())
+                .unwrap_or(false);
             if has_buffer {
                 let window = self.unmapped_windows.remove(idx);
                 self.add_window(window);
@@ -443,10 +709,55 @@ impl SeatHandler for Takhti {
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let dh = &self.display_handle;
         let client = focused.and_then(|s| dh.get_client(s.id()).ok());
-        set_data_device_focus(dh, seat, client);
+        set_data_device_focus(dh, seat, client.clone());
+        set_primary_focus(dh, seat, client);
     }
 }
 delegate_seat!(Takhti);
+delegate_relative_pointer!(Takhti);
+delegate_presentation!(Takhti);
+
+// ─── pointer-constraints ──────────────────────────────────────────────────────
+//
+// The lock/confine enforcement lives in the relative-motion path (input.rs);
+// smithay deactivates a constraint itself when pointer focus leaves its
+// surface, so only activation and the cursor position hint are handled here.
+
+impl PointerConstraintsHandler for Takhti {
+    fn new_constraint(&mut self, _surface: &WlSurface, _pointer: &PointerHandle<Self>) {
+        self.maybe_activate_pointer_constraint();
+    }
+
+    fn cursor_position_hint(
+        &mut self,
+        surface: &WlSurface,
+        pointer: &PointerHandle<Self>,
+        location: Point<f64, Logical>,
+    ) {
+        let is_active = with_pointer_constraint(surface, pointer, |constraint| {
+            constraint.is_some_and(|c| c.is_active())
+        });
+        if !is_active {
+            return;
+        }
+        // The hint is surface-local; recover the surface origin from the
+        // current hit-test and only honor hints from the constrained surface.
+        let scale = self.space.scale();
+        let pos = crate::coords::point_to_physical(pointer.current_location(), scale);
+        let Some((under, origin)) = self.surface_under(pos) else {
+            return;
+        };
+        if &under != surface {
+            return;
+        }
+        let target = crate::coords::point_to_physical(origin + location, scale);
+        let target = self.clamp_to_outputs(target);
+        pointer.set_location(crate::coords::point_to_protocol(target, scale));
+        // The cursor is composited, so moving it damages the output.
+        self.queue_redraw_all();
+    }
+}
+delegate_pointer_constraints!(Takhti);
 
 // ─── selection / data device ──────────────────────────────────────────────────
 
@@ -463,6 +774,13 @@ impl DataDeviceHandler for Takhti {
 impl WaylandDndGrabHandler for Takhti {}
 impl DndGrabHandler for Takhti {}
 delegate_data_device!(Takhti);
+
+impl PrimarySelectionHandler for Takhti {
+    fn primary_selection_state(&mut self) -> &mut PrimarySelectionState {
+        &mut self.primary_selection_state
+    }
+}
+delegate_primary_selection!(Takhti);
 
 // ─── outputs ──────────────────────────────────────────────────────────────────
 
@@ -494,11 +812,7 @@ impl DmabufHandler for Takhti {
         dmabuf: Dmabuf,
         notifier: ImportNotifier,
     ) {
-        let Some(renderer) = self.backend.renderer() else {
-            notifier.failed();
-            return;
-        };
-        if renderer.import_dmabuf(&dmabuf, None).is_ok() {
+        if self.backend.import_dmabuf(&dmabuf) {
             let _ = notifier.successful::<Takhti>();
         } else {
             notifier.failed();

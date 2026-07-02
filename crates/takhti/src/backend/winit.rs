@@ -6,9 +6,12 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::{ImportDma, ImportEgl};
 use smithay::backend::winit::{self, WinitEvent, WinitGraphicsBackend};
 use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
+use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 use smithay::reexports::winit::dpi::LogicalSize;
 use smithay::reexports::winit::platform::wayland::WindowAttributesExtWayland;
 use smithay::reexports::winit::window::Window as WinitWindow;
+use smithay::utils::Monotonic;
+use smithay::wayland::presentation::Refresh;
 use tracing::debug;
 
 use crate::backend::Backend;
@@ -71,7 +74,8 @@ pub fn init(takhti: &mut Takhti) -> Result<()> {
         .dmabuf_state
         .create_global::<Takhti>(&display_handle, formats);
 
-    takhti.loop_handle
+    takhti
+        .loop_handle
         .clone()
         .insert_source(winit_source, move |event, _, takhti| match event {
             WinitEvent::Resized { size, .. } => {
@@ -101,13 +105,15 @@ pub fn init(takhti: &mut Takhti) -> Result<()> {
 
 pub fn redraw(takhti: &mut Takhti) {
     let (output_loc, output_size) = {
-        let Backend::Winit(winit) = &takhti.backend else { return };
-        takhti.space
+        let Backend::Winit(winit) = &takhti.backend else {
+            return;
+        };
+        takhti
+            .space
             .output_geometry(&winit.output)
             .map(|geo| (geo.loc, geo.size))
             .unwrap_or_default()
     };
-    let borders = crate::render::border_elements(takhti, output_loc);
 
     let Takhti {
         backend,
@@ -115,11 +121,20 @@ pub fn redraw(takhti: &mut Takhti) {
         start_time,
         ui,
         binds,
+        lua,
+        border_buffers,
+        clock,
         ..
     } = takhti;
     let Backend::Winit(winit) = backend else {
         return;
     };
+    let borders = crate::render::border_elements(
+        space,
+        border_buffers,
+        lua.settings().border_width,
+        output_loc,
+    );
 
     // Compositor UI (dialogs/overlays) first: earlier elements render on top.
     let ui_elements = ui.render_elements(winit.backend.renderer(), output_size, binds);
@@ -136,12 +151,34 @@ pub fn redraw(takhti: &mut Takhti) {
         let (renderer, mut framebuffer) = winit.backend.bind().unwrap();
         winit
             .damage_tracker
-            .render_output(renderer, &mut framebuffer, 0, &elements, [0.05, 0.05, 0.05, 1.0])
+            .render_output(
+                renderer,
+                &mut framebuffer,
+                0,
+                &elements,
+                [0.05, 0.05, 0.05, 1.0],
+            )
             .unwrap()
     };
 
     if let Some(damage) = res.damage {
         winit.backend.submit(Some(damage)).unwrap();
+        // No real vblank here; approximate presentation as "now" at the
+        // output's nominal refresh so presentation-time clients keep pacing.
+        let mut feedback =
+            crate::render::take_presentation_feedback(space, &winit.output, &res.states);
+        let refresh = winit
+            .output
+            .current_mode()
+            .filter(|mode| mode.refresh > 0)
+            .map(|mode| Refresh::fixed(Duration::from_secs_f64(1_000f64 / mode.refresh as f64)))
+            .unwrap_or(Refresh::Unknown);
+        feedback.presented::<_, Monotonic>(
+            clock.now(),
+            refresh,
+            0,
+            wp_presentation_feedback::Kind::Vsync,
+        );
     }
 
     let time = start_time.elapsed();

@@ -36,11 +36,23 @@ pub struct Span<'a> {
 
 impl<'a> Span<'a> {
     pub fn sans(text: &'a str, size: f32, color: [f32; 4]) -> Self {
-        Self { text, face: Face::Sans, size, color, chip: None }
+        Self {
+            text,
+            face: Face::Sans,
+            size,
+            color,
+            chip: None,
+        }
     }
 
     pub fn key(text: &'a str, size: f32, color: [f32; 4], chip: [f32; 4]) -> Self {
-        Self { text, face: Face::Mono, size, color, chip: Some(chip) }
+        Self {
+            text,
+            face: Face::Mono,
+            size,
+            color,
+            chip: Some(chip),
+        }
     }
 }
 
@@ -49,16 +61,26 @@ impl Fonts {
         let sans = load_font(
             "TAKHTI_FONT",
             "sans",
-            &["DejaVuSans.ttf", "NotoSans-Regular.ttf", "LiberationSans-Regular.ttf"],
+            &[
+                "DejaVuSans.ttf",
+                "NotoSans-Regular.ttf",
+                "LiberationSans-Regular.ttf",
+            ],
         )
         .context("no sans font found")?;
         let mono = load_font(
             "TAKHTI_FONT_MONO",
             "monospace",
-            &["DejaVuSansMono.ttf", "NotoSansMono-Regular.ttf", "LiberationMono-Regular.ttf"],
+            &[
+                "DejaVuSansMono.ttf",
+                "NotoSansMono-Regular.ttf",
+                "LiberationMono-Regular.ttf",
+            ],
         )
         .unwrap_or_else(|_| sans.clone());
-        Ok(Self { faces: [sans, mono] })
+        Ok(Self {
+            faces: [sans, mono],
+        })
     }
 
     fn layout(&self, spans: &[Span]) -> Layout<usize> {
@@ -96,7 +118,11 @@ pub struct Canvas {
 impl Canvas {
     pub fn new(width: i32, height: i32) -> Self {
         let (width, height) = (width.max(1), height.max(1));
-        Self { width, height, data: vec![0; (width * height * 4) as usize] }
+        Self {
+            width,
+            height,
+            data: vec![0; (width * height * 4) as usize],
+        }
     }
 
     pub fn fill(&mut self, color: [f32; 4]) {
@@ -229,7 +255,10 @@ fn font_path(env: &str, fc_pattern: &str, file_names: &[&str]) -> Option<PathBuf
     }
 
     // fontconfig knows the user's actual fonts; fall back to well-known dirs.
-    if let Ok(out) = Command::new("fc-match").args(["-f", "%{file}", fc_pattern]).output() {
+    if let Ok(out) = Command::new("fc-match")
+        .args(["-f", "%{file}", fc_pattern])
+        .output()
+    {
         if out.status.success() {
             let path = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
             if path.exists() {

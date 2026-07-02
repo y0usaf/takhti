@@ -1,7 +1,8 @@
 pub mod tty;
 pub mod winit;
 
-use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::backend::allocator::dmabuf::Dmabuf;
+use smithay::backend::renderer::ImportDma;
 
 pub use tty::TtyData;
 pub use winit::WinitData;
@@ -29,11 +30,13 @@ impl Backend {
         }
     }
 
-    pub fn renderer(&mut self) -> Option<&mut GlesRenderer> {
+    /// Import a client dmabuf into the renderer that composites it (the
+    /// primary GPU on the TTY backend).
+    pub fn import_dmabuf(&mut self, dmabuf: &Dmabuf) -> bool {
         match self {
-            Backend::Uninit => None,
-            Backend::Winit(data) => Some(data.backend.renderer()),
-            Backend::Tty(data) => Some(&mut data.renderer),
+            Backend::Uninit => false,
+            Backend::Winit(data) => data.backend.renderer().import_dmabuf(dmabuf, None).is_ok(),
+            Backend::Tty(data) => tty::import_dmabuf(data, dmabuf),
         }
     }
 }
