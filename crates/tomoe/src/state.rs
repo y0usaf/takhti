@@ -260,6 +260,10 @@ impl Tomoe {
             &display_handle,
             |_| true,
         );
+        // Passive hint global: records per-surface tearing preferences that
+        // the tty backend consults on the fullscreen flip path. No state to
+        // keep — the display owns the global, the hints live in surface data.
+        crate::protocols::tearing_control::TearingControlManagerState::new::<Self>(&display_handle);
         let image_capture_source_state = ImageCaptureSourceState::new();
         let output_capture_source_state = OutputCaptureSourceState::new::<Self>(&display_handle);
         let toplevel_capture_source_state =

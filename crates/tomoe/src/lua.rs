@@ -241,6 +241,10 @@ pub struct Settings {
     /// Focus the window under the pointer as it moves (sloppy focus:
     /// leaving onto empty space keeps focus). Default: click-to-focus.
     pub focus_follows_mouse: bool,
+    /// Allow tearing (async page flips) for fullscreen windows that request
+    /// it via wp_tearing_control_v1. Off by default: tearing is jarring
+    /// unless you asked for it. Per-window overrides come with window rules.
+    pub tearing: bool,
     /// xkb keymap + key repeat, applied to the seat keyboard.
     pub keyboard: KeyboardSettings,
     /// libinput device config (tty backend).
@@ -269,6 +273,7 @@ impl Default for Settings {
             border_unfocused: parse_color("#3b4261").unwrap(),
             mod_key: crate::input::ModKey::default(),
             focus_follows_mouse: false,
+            tearing: false,
             keyboard: KeyboardSettings::default(),
             input: InputConfig::default(),
         }
@@ -710,6 +715,9 @@ impl LuaRuntime {
                 // every later partial settings call.
                 if let Ok(Some(ffm)) = table.get::<Option<bool>>("focus_follows_mouse") {
                     settings.focus_follows_mouse = ffm;
+                }
+                if let Ok(Some(tearing)) = table.get::<Option<bool>>("tearing") {
+                    settings.tearing = tearing;
                 }
                 if let Ok(m) = table.get::<String>("mod") {
                     match crate::input::ModKey::parse(&m) {

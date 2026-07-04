@@ -52,7 +52,9 @@ use smithay::reexports::input::{
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::reexports::wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_v1::TrancheFlags;
 use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::backend::GlobalId;
+use smithay::input::pointer::CursorImageStatus;
 use smithay::utils::{DeviceFd, Monotonic};
 use smithay::wayland::dmabuf::{DmabufFeedback, DmabufFeedbackBuilder};
 use smithay::wayland::drm_syncobj::{supports_syncobj_eventfd, DrmSyncobjState};
@@ -76,6 +78,15 @@ const SUPPORTED_COLOR_FORMATS: [Fourcc; 4] = [
 ];
 
 const CLEAR_COLOR: [f32; 4] = [0.05, 0.05, 0.05, 1.0];
+
+/// `TOMOE_FORCE_TEARING=1` tears for any fullscreen window, skipping both
+/// `settings.tearing` and the wp_tearing_control hint — X11 games through
+/// xwayland-satellite can't send the hint. Testing aid (ShojiWM's
+/// SHOJI_FORCE_TEARING) until window rules can grant tearing per app.
+fn force_tearing() -> bool {
+    static FORCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FORCE.get_or_init(|| std::env::var("TOMOE_FORCE_TEARING").is_ok_and(|v| v == "1"))
+}
 
 pub type TtyGpuManager = GpuManager<GbmGlesBackend<GlesRenderer, DrmDeviceFd>>;
 
@@ -126,6 +137,12 @@ pub struct TtySurface {
     /// Whether the last frame put a client buffer on the primary plane
     /// (zero-copy). Only for edge-triggered logging.
     pub direct_scanout: bool,
+    /// Driver capability for async (tearing) page flips, cached at connect.
+    pub supports_async_flip: bool,
+    /// Whether the last queued frame was submitted as an async (tearing)
+    /// flip. Gates the estimated-vblank bypass in `queue_redraw` and the
+    /// edge-triggered tearing log.
+    pub tearing_active: bool,
 }
 
 /// Dmabuf feedback pair for one output surface. `render` lists the primary
@@ -807,6 +824,12 @@ fn connector_connected(
     let global = output.create_global::<Tomoe>(display_handle);
     space.map_output(&output, (x, 0));
 
+    let supports_async_flip = compositor.supports_async_page_flip();
+    debug!(
+        "output {}: async page-flip (tearing) capability: {supports_async_flip}",
+        output.name()
+    );
+
     device.surfaces.insert(
         crtc,
         TtySurface {
@@ -817,6 +840,8 @@ fn connector_connected(
             global,
             dmabuf_feedback,
             direct_scanout: false,
+            supports_async_flip,
+            tearing_active: false,
         },
     );
     Ok(true)
@@ -1250,7 +1275,17 @@ pub fn queue_redraw(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
         },
         RedrawState::WaitingForEstimatedVBlank(token)
         | RedrawState::WaitingForEstimatedVBlankAndQueued(token) => {
-            RedrawState::WaitingForEstimatedVBlankAndQueued(token)
+            // A tearing surface presents at client commit rate, not vblank
+            // rate: parking this commit behind the estimated-vblank timer
+            // would bunch frames into refresh-period bundles (ShojiWM's
+            // fullscreen-direct-scanout-tearing.md §5). Repaint now instead.
+            if surface.tearing_active {
+                loop_handle.remove(token);
+                loop_handle.insert_idle(move |tomoe| render_surface(tomoe, node, crtc));
+                RedrawState::Queued
+            } else {
+                RedrawState::WaitingForEstimatedVBlankAndQueued(token)
+            }
         }
     };
 }
@@ -1425,6 +1460,34 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
     let border_width = tomoe.lua.settings().border_width;
 
     let locked = tomoe.is_locked();
+
+    // Tearing candidate: a fullscreen window on this output whose client
+    // hinted that async flips are acceptable (wp_tearing_control), gated by
+    // settings.tearing. TOMOE_FORCE_TEARING=1 skips the hint — X11 games
+    // through xwayland-satellite can't send one (testing aid until window
+    // rules can grant tearing per app).
+    let tearing_candidate = !locked && (tomoe.lua.settings().tearing || force_tearing()) && {
+        let output_rect = smithay::utils::Rectangle::new(output_loc, output_size);
+        tomoe.space.elements().any(|window| {
+            let Some(toplevel) = window.toplevel() else {
+                return false;
+            };
+            let fullscreen = toplevel.with_committed_state(|state| {
+                state
+                    .map(|s| s.states.contains(xdg_toplevel::State::Fullscreen))
+                    .unwrap_or(false)
+            });
+            fullscreen
+                && tomoe
+                    .space
+                    .element_geometry(window)
+                    .is_some_and(|geo| geo.overlaps(output_rect))
+                && (force_tearing()
+                    || crate::protocols::tearing_control::surface_prefers_tearing(
+                        toplevel.wl_surface(),
+                    ))
+        })
+    };
     let Tomoe {
         backend,
         space,
@@ -1520,8 +1583,23 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
     // decides) and the cursor rides the cursor plane, so pointer motion
     // stops re-compositing the scene. Overlay planes stay off (niri
     // default: weird performance on some hardware).
-    let frame_flags =
+    let mut frame_flags =
         FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY | FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT;
+
+    // Tearing needs the cursor out of the picture: async flips may only
+    // touch the primary plane, so a cursor-plane update in the same commit
+    // is an EINVAL. Tear only while the cursor is hidden or elsewhere, and
+    // composite it (software) rather than offloading it for those frames —
+    // a briefly visible cursor pausing tearing is expected and transient.
+    let cursor_on_output = !matches!(cursor_status, CursorImageStatus::Hidden)
+        && cursor_phys.x >= 0.0
+        && cursor_phys.y >= 0.0
+        && cursor_phys.x < output_size.w as f64
+        && cursor_phys.y < output_size.h as f64;
+    let should_tear = tearing_candidate && !cursor_on_output && surface.supports_async_flip;
+    if should_tear {
+        frame_flags.remove(FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT);
+    }
 
     let mut rendered_ok = false;
     match surface
@@ -1577,14 +1655,30 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
                     lock_surfaces.get(&surface.output),
                     &res.states,
                 );
-                match surface.compositor.queue_frame(feedback) {
+                match surface
+                    .compositor
+                    .queue_frame_tearing(feedback, should_tear)
+                {
                     Ok(()) => {
+                        if should_tear != surface.tearing_active {
+                            surface.tearing_active = should_tear;
+                            let name = surface.output.name();
+                            if should_tear {
+                                debug!(
+                                    "output {name}: tearing engaged (async flips, forced={})",
+                                    force_tearing()
+                                );
+                            } else {
+                                debug!("output {name}: tearing disengaged");
+                            }
+                        }
                         surface.redraw_state = RedrawState::WaitingForVBlank {
                             redraw_needed: false,
                         };
                     }
                     Err(err) => {
                         warn!("error queueing frame: {err}");
+                        surface.tearing_active = false;
                         surface.redraw_state = RedrawState::Idle;
                     }
                 }

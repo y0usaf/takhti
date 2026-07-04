@@ -23,8 +23,11 @@ Done and working:
 - Plane offloading: fullscreen direct scanout (primary plane, zero-copy)
   + hardware cursor plane via DrmCompositor frame flags; per-surface
   render/scanout dmabuf feedback steers clients onto flippable formats
-  (NVIDIA compressed modifiers excluded). Overlay planes off. Live
-  verification pending (see M3 §4)
+  (NVIDIA compressed modifiers excluded). Overlay planes off. Tearing:
+  `wp_tearing_control_v1` + async page flips via the smithay fork
+  (`y0usaf/smithay#tomoe-tearing`), gated by `settings.tearing`, with
+  the estimated-vblank bypass so tearing presents follow commit rate.
+  Live verification pending (see M3 §4)
 - Physical-first coordinate doctrine (`coords.rs`), fractional-scale +
   viewporter, dmabuf, layer-shell, xdg-decoration (+ KDE legacy),
   data-device/clipboard, primary selection, xdg-output,
@@ -103,7 +106,11 @@ Done and working:
       `use_vrr(false)` when unsupported/unwanted per niri's stale
       VRR_ENABLED workaround). Live verification pending (needs a
       VRR-capable monitor)
-- [ ] Tearing control (`wp_tearing_control_v1`) + async page flips
+- [x] Tearing control (`wp_tearing_control_v1`) + async page flips
+      (smithay fork `y0usaf/smithay#tomoe-tearing` = niri's pin + one
+      async-flip commit; `settings.tearing` gates hint-requesting
+      fullscreen windows, `TOMOE_FORCE_TEARING=1` for hint-less X11 games;
+      live verification pending)
 - [x] Output hotplug (udev → connector scan diff → connect/disconnect,
       reposition, `outputs_changed`)
 - [x] Per-output position/mirror/disable (`settings.displays`: explicit
@@ -336,9 +343,25 @@ real-session xdg-desktop-portal-wlr run — the protocols it rides are in).*
      no-damage safety net, not a presentation-time predictor like niri's
      frame clock. Live check pending (VRR-capable monitor +
      `drm_info` VRR_ENABLED)
-   - Tearing control (`wp_tearing_control_v1` + async flips) — open;
-     needs the smithay fork/patch described in the ShojiWM doc, plus the
-     estimated-vblank bypass for tearing surfaces (§5 of that doc)
+   - ~~Tearing control~~ landed — smithay fork
+     `github.com/y0usaf/smithay` branch `tomoe-tearing` (niri's pin
+     ff5fa7df + one commit: `DrmSurface::page_flip(.., allow_tearing)`,
+     `supports_async_page_flip()`, `DrmCompositor::queue_frame_tearing`
+     with driver-rejection → synced-flip retry; rebase the branch when
+     bumping the pin). Tomoe side: `wp_tearing_control_v1` global
+     (passive hint store in surface data, ShojiWM port), and the tty
+     render path tears when `settings.tearing` (or
+     `TOMOE_FORCE_TEARING=1`, the testing/X11 escape hatch — satellite
+     clients can't send the hint) + a fullscreen window on the output
+     wants it + the cursor is hidden/elsewhere + the driver caps say so.
+     Tearing frames drop `ALLOW_CURSOR_PLANE_SCANOUT` (async flips may
+     only touch the primary plane — EINVAL otherwise), and
+     `queue_redraw` promotes tearing surfaces out of
+     `WaitingForEstimatedVBlank` straight to `Queued` so presents follow
+     the client's commit rate, not the refresh period (§5 of the ShojiWM
+     doc — the frame-bunching trap). Live checks pending: `tearing
+     engaged` log + present cadence in a real game; per-window rule
+     override arrives with M4 window rules
 
 *Accept: laptop lid/dock cycles, lock screen, fullscreen game with direct
 scanout confirmed via drm_info; no idle redraw storms.*

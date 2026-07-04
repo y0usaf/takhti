@@ -752,6 +752,7 @@ impl SeatHandler for Tomoe {
 delegate_seat!(Tomoe);
 delegate_relative_pointer!(Tomoe);
 delegate_presentation!(Tomoe);
+crate::delegate_tearing_control!(Tomoe);
 
 // ─── pointer-constraints ──────────────────────────────────────────────────────
 //

@@ -30,6 +30,10 @@ tomoe.settings {
   -- Focus the window under the pointer as it moves (sloppy focus: leaving
   -- onto empty space keeps focus). Default: click-to-focus.
   -- focus_follows_mouse = true,
+  -- Allow tearing (async page flips) for fullscreen windows that request
+  -- it via wp_tearing_control — lowest latency for games, at the cost of
+  -- visible tear lines. Default: off.
+  -- tearing = true,
   -- xkb keymap and key repeat. Unset fields use the xkb defaults
   -- (including XKB_DEFAULT_* environment variables).
   -- keyboard = {

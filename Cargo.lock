@@ -2271,7 +2271,7 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 [[package]]
 name = "smithay"
 version = "0.7.0"
-source = "git+https://github.com/Smithay/smithay.git?rev=ff5fa7df392cecfba049ffed55cdaa4e98a8e7ef#ff5fa7df392cecfba049ffed55cdaa4e98a8e7ef"
+source = "git+https://github.com/y0usaf/smithay.git?rev=4ca26929d77c9cf6e3e837e633d2efa386a78adf#4ca26929d77c9cf6e3e837e633d2efa386a78adf"
 dependencies = [
  "aliasable",
  "appendlist",
@@ -2344,7 +2344,7 @@ dependencies = [
 [[package]]
 name = "smithay-drm-extras"
 version = "0.1.0"
-source = "git+https://github.com/Smithay/smithay.git?rev=ff5fa7df392cecfba049ffed55cdaa4e98a8e7ef#ff5fa7df392cecfba049ffed55cdaa4e98a8e7ef"
+source = "git+https://github.com/y0usaf/smithay.git?rev=4ca26929d77c9cf6e3e837e633d2efa386a78adf#4ca26929d77c9cf6e3e837e633d2efa386a78adf"
 dependencies = [
  "drm",
 ]

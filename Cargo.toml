@@ -14,15 +14,17 @@ serde_json = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Same Smithay pin as niri 26.4 — the most battle-tested rev available.
+# niri 26.4's Smithay pin (ff5fa7df) + one commit: async (tearing) page
+# flip support, which upstream still lacks. Fork branch `tomoe-tearing`
+# carries exactly that commit; rebase it when bumping the pin.
 [workspace.dependencies.smithay]
-git = "https://github.com/Smithay/smithay.git"
-rev = "ff5fa7df392cecfba049ffed55cdaa4e98a8e7ef"
+git = "https://github.com/y0usaf/smithay.git"
+rev = "4ca26929d77c9cf6e3e837e633d2efa386a78adf"
 default-features = false
 
 [workspace.dependencies.smithay-drm-extras]
-git = "https://github.com/Smithay/smithay.git"
-rev = "ff5fa7df392cecfba049ffed55cdaa4e98a8e7ef"
+git = "https://github.com/y0usaf/smithay.git"
+rev = "4ca26929d77c9cf6e3e837e633d2efa386a78adf"
 default-features = false
 
 [profile.release]
