@@ -9,7 +9,7 @@
 //! implementation ships as `resources/wm.lua`, preloaded as module `"wm"`,
 //! and uses only this public API.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -19,6 +19,7 @@ use mlua::{Function, Lua, MetaMethod, RegistryKey, Table, UserData, UserDataMeth
 use tracing::{info, warn};
 
 use crate::input::Action;
+use crate::process::{Launch, ProcessDecl, ProcessSpec, ReloadPolicy, RestartPolicy, RunPolicy};
 
 const DEFAULT_CONFIG: &str = include_str!("../../../resources/init.lua");
 const WM_LUA: &str = include_str!("../../../resources/wm.lua");
@@ -379,6 +380,112 @@ pub fn parse_color(s: &str) -> Option<[f32; 4]> {
     }
 }
 
+/// Parse a `tomoe.process` spec table: `command` (string → shell, array →
+/// argv) or `shell` (string), plus `cwd` and `env`. When neither command
+/// form is given, `default_cmd` (the manifest id) is the argv — so
+/// `tomoe.process.service("waybar", { restart = "on_exit" })` just works.
+fn parse_process_spec(
+    table: Option<&Table>,
+    default_cmd: Option<&str>,
+    label: &str,
+) -> Option<ProcessSpec> {
+    let mut launch = None;
+    if let Some(t) = table {
+        if let Ok(Value::String(s)) = t.get::<Value>("shell") {
+            launch = Some(Launch::Shell(s.to_string_lossy()));
+        }
+        if launch.is_none() {
+            match t.get::<Value>("command") {
+                Ok(Value::String(s)) => {
+                    launch = Some(Launch::Shell(s.to_string_lossy()))
+                }
+                Ok(Value::Table(arr)) => {
+                    let mut argv = Vec::new();
+                    for v in arr.sequence_values::<String>() {
+                        match v {
+                            Ok(s) => argv.push(s),
+                            Err(_) => {
+                                warn!("{label}.command: expected an array of strings");
+                                return None;
+                            }
+                        }
+                    }
+                    if argv.is_empty() {
+                        warn!("{label}.command: must not be empty");
+                        return None;
+                    }
+                    launch = Some(Launch::Argv(argv));
+                }
+                Ok(Value::Nil) | Err(_) => {}
+                Ok(other) => {
+                    warn!(
+                        "{label}.command: expected a string or array of strings, got {}",
+                        other.type_name()
+                    );
+                    return None;
+                }
+            }
+        }
+    }
+    let launch = match (launch, default_cmd) {
+        (Some(launch), _) => launch,
+        (None, Some(cmd)) => Launch::Argv(vec![cmd.to_string()]),
+        (None, None) => {
+            warn!("{label}: missing `command` (or `shell`)");
+            return None;
+        }
+    };
+    let mut spec = ProcessSpec {
+        launch,
+        cwd: None,
+        env: Default::default(),
+    };
+    if let Some(t) = table {
+        if let Ok(cwd) = t.get::<String>("cwd") {
+            spec.cwd = Some(PathBuf::from(cwd));
+        }
+        if let Ok(env) = t.get::<Table>("env") {
+            for pair in env.pairs::<String, String>() {
+                match pair {
+                    Ok((key, value)) => {
+                        spec.env.insert(key, value);
+                    }
+                    Err(_) => warn!("{label}.env: expected string keys and values"),
+                }
+            }
+        }
+    }
+    Some(spec)
+}
+
+/// Parse a policy-string field, accepting `-` or `_` as the separator.
+/// Missing/nil yields the default; an unknown value warns and defaults.
+fn parse_policy_field<T: Default>(
+    table: &Table,
+    field: &str,
+    label: &str,
+    parse: impl Fn(&str) -> Option<T>,
+    expected: &str,
+) -> T {
+    match table.get::<Value>(field) {
+        Ok(Value::String(s)) => {
+            let normalized = s.to_string_lossy().replace('-', "_");
+            parse(&normalized).unwrap_or_else(|| {
+                warn!("{label}.{field}: unknown value {normalized:?} (expected {expected})");
+                T::default()
+            })
+        }
+        Ok(Value::Nil) | Err(_) => T::default(),
+        Ok(other) => {
+            warn!(
+                "{label}.{field}: expected a string, got {}",
+                other.type_name()
+            );
+            T::default()
+        }
+    }
+}
+
 // ─── Snapshot (Lua-readable state) ────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
@@ -509,6 +616,14 @@ struct Shared {
     pointer: RefCell<(f64, f64, f64, f64)>,
     hooks: RefCell<Hooks>,
     grab: RefCell<Option<PointerGrab>>,
+    /// Process manifest (`tomoe.process.once/service`), keyed by id — the
+    /// desired state the core's ProcessManager reconciles against.
+    processes: RefCell<HashMap<String, ProcessDecl>>,
+    /// Set on every manifest mutation; the core takes-and-reconciles.
+    processes_dirty: Cell<bool>,
+    /// Fire-and-forget spawns (`tomoe.spawn`, `tomoe.process.spawn`),
+    /// drained like ops so the core can track and reap the children.
+    spawns: RefCell<Vec<ProcessSpec>>,
 }
 
 // ─── Window userdata ──────────────────────────────────────────────────────────
@@ -793,14 +908,126 @@ impl LuaRuntime {
             )?,
         )?;
 
-        // tomoe.spawn("foot")
+        // tomoe.spawn("foot") — fire-and-forget shell command. Queued (like
+        // ops) so the core's process manager tracks and reaps the child.
+        let s = shared.clone();
         tomoe.set(
             "spawn",
-            lua.create_function(|_, cmd: String| {
-                spawn(&cmd);
+            lua.create_function(move |_, cmd: String| {
+                s.spawns.borrow_mut().push(ProcessSpec {
+                    launch: Launch::Shell(cmd),
+                    cwd: None,
+                    env: Default::default(),
+                });
                 Ok(())
             })?,
         )?;
+
+        // tomoe.process — declarative process manifest (ShojiWM-shape).
+        // `once`/`service` declare desired state diffed by id, so a config
+        // reload keeps, restarts, or stops children as the diff dictates;
+        // `spawn` is imperative fire-and-forget (event handlers).
+        let process = lua.create_table()?;
+
+        // tomoe.process.once(id, { command|shell, cwd, env,
+        //   run = "once_per_session" (default) | "once_per_config_version" })
+        let s = shared.clone();
+        process.set(
+            "once",
+            lua.create_function(move |_, (id, opts): (String, Option<Table>)| {
+                let label = format!("process.once({id:?})");
+                let Some(spec) = parse_process_spec(opts.as_ref(), Some(&id), &label) else {
+                    return Ok(());
+                };
+                let run = opts
+                    .map(|t| {
+                        parse_policy_field(
+                            &t,
+                            "run",
+                            &label,
+                            |v| match v {
+                                "once_per_session" => Some(RunPolicy::OncePerSession),
+                                "once_per_config_version" => Some(RunPolicy::OncePerConfigVersion),
+                                _ => None,
+                            },
+                            "\"once_per_session\" or \"once_per_config_version\"",
+                        )
+                    })
+                    .unwrap_or_default();
+                s.processes
+                    .borrow_mut()
+                    .insert(id, ProcessDecl::Once { spec, run });
+                s.processes_dirty.set(true);
+                Ok(())
+            })?,
+        )?;
+
+        // tomoe.process.service(id, { command|shell, cwd, env,
+        //   restart = "never" | "on_failure" | "on_exit" (default),
+        //   reload = "keep_if_unchanged" (default) | "always_restart" })
+        let s = shared.clone();
+        process.set(
+            "service",
+            lua.create_function(move |_, (id, opts): (String, Option<Table>)| {
+                let label = format!("process.service({id:?})");
+                let Some(spec) = parse_process_spec(opts.as_ref(), Some(&id), &label) else {
+                    return Ok(());
+                };
+                let (restart, reload) = opts
+                    .map(|t| {
+                        (
+                            parse_policy_field(
+                                &t,
+                                "restart",
+                                &label,
+                                |v| match v {
+                                    "never" => Some(RestartPolicy::Never),
+                                    "on_failure" => Some(RestartPolicy::OnFailure),
+                                    "on_exit" => Some(RestartPolicy::OnExit),
+                                    _ => None,
+                                },
+                                "\"never\", \"on_failure\", or \"on_exit\"",
+                            ),
+                            parse_policy_field(
+                                &t,
+                                "reload",
+                                &label,
+                                |v| match v {
+                                    "keep_if_unchanged" => Some(ReloadPolicy::KeepIfUnchanged),
+                                    "always_restart" => Some(ReloadPolicy::AlwaysRestart),
+                                    _ => None,
+                                },
+                                "\"keep_if_unchanged\" or \"always_restart\"",
+                            ),
+                        )
+                    })
+                    .unwrap_or_default();
+                s.processes.borrow_mut().insert(
+                    id,
+                    ProcessDecl::Service {
+                        spec,
+                        restart,
+                        reload,
+                    },
+                );
+                s.processes_dirty.set(true);
+                Ok(())
+            })?,
+        )?;
+
+        // tomoe.process.spawn { command = {...} | shell = "...", cwd, env }
+        let s = shared.clone();
+        process.set(
+            "spawn",
+            lua.create_function(move |_, opts: Table| {
+                if let Some(spec) = parse_process_spec(Some(&opts), None, "process.spawn") {
+                    s.spawns.borrow_mut().push(spec);
+                }
+                Ok(())
+            })?,
+        )?;
+
+        tomoe.set("process", process)?;
 
         // tomoe.clear_focus() — drop keyboard focus (no window receives keys)
         let s = shared.clone();
@@ -1091,6 +1318,24 @@ impl LuaRuntime {
 
     pub fn take_ops(&mut self) -> Vec<WindowOp> {
         self.shared.ops.take()
+    }
+
+    pub fn take_spawns(&mut self) -> Vec<ProcessSpec> {
+        self.shared.spawns.take()
+    }
+
+    /// The process manifest, if it changed since the last take. Forcing a
+    /// take (reload: the fresh VM may declare *fewer* processes than the old
+    /// one, which is itself a diff) goes through `mark_processes_dirty`.
+    pub fn take_process_manifest(&mut self) -> Option<HashMap<String, ProcessDecl>> {
+        self.shared
+            .processes_dirty
+            .take()
+            .then(|| self.shared.processes.borrow().clone())
+    }
+
+    pub fn mark_processes_dirty(&self) {
+        self.shared.processes_dirty.set(true);
     }
 
     pub fn has_window_open_hooks(&self) -> bool {
@@ -1517,6 +1762,85 @@ mod tests {
     }
 
     #[test]
+    fn parse_process_manifest() {
+        let mut rt = LuaRuntime::new().unwrap();
+        rt.lua
+            .load(
+                r#"
+                tomoe.process.once("fcitx5", { command = {"fcitx5", "-d"} })
+                tomoe.process.once("wall", {
+                  shell = "swaybg -i ~/wall.png",
+                  run = "once_per_config_version",
+                })
+                tomoe.process.service("waybar", { restart = "on-exit" })
+                tomoe.process.service("mako", {
+                  command = {"mako"},
+                  restart = "on_failure",
+                  reload = "always_restart",
+                  cwd = "sub/dir",
+                  env = { MAKO_DEBUG = "1" },
+                })
+                tomoe.process.spawn { command = {"notify-send", "hello"} }
+                tomoe.spawn("foot")
+                "#,
+            )
+            .exec()
+            .unwrap();
+
+        let manifest = rt.take_process_manifest().expect("manifest is dirty");
+        assert!(rt.take_process_manifest().is_none(), "take clears dirty");
+        assert_eq!(manifest.len(), 4);
+
+        let ProcessDecl::Once { spec, run } = &manifest["fcitx5"] else {
+            panic!("fcitx5 should be a once entry");
+        };
+        assert_eq!(
+            spec.launch,
+            Launch::Argv(vec!["fcitx5".into(), "-d".into()])
+        );
+        assert_eq!(*run, RunPolicy::OncePerSession);
+
+        let ProcessDecl::Once { run, .. } = &manifest["wall"] else {
+            panic!("wall should be a once entry");
+        };
+        assert_eq!(*run, RunPolicy::OncePerConfigVersion);
+
+        // No command: the id is the command.
+        let ProcessDecl::Service {
+            spec,
+            restart,
+            reload,
+        } = &manifest["waybar"]
+        else {
+            panic!("waybar should be a service entry");
+        };
+        assert_eq!(spec.launch, Launch::Argv(vec!["waybar".into()]));
+        assert_eq!(*restart, RestartPolicy::OnExit);
+        assert_eq!(*reload, ReloadPolicy::KeepIfUnchanged);
+
+        let ProcessDecl::Service {
+            spec,
+            restart,
+            reload,
+        } = &manifest["mako"]
+        else {
+            panic!("mako should be a service entry");
+        };
+        assert_eq!(*restart, RestartPolicy::OnFailure);
+        assert_eq!(*reload, ReloadPolicy::AlwaysRestart);
+        assert_eq!(spec.cwd.as_deref(), Some(std::path::Path::new("sub/dir")));
+        assert_eq!(spec.env.get("MAKO_DEBUG").map(String::as_str), Some("1"));
+
+        let spawns = rt.take_spawns();
+        assert_eq!(spawns.len(), 2);
+        assert_eq!(
+            spawns[0].launch,
+            Launch::Argv(vec!["notify-send".into(), "hello".into()])
+        );
+        assert_eq!(spawns[1].launch, Launch::Shell("foot".into()));
+    }
+
+    #[test]
     fn parse_resolution() {
         let parse = |s: &str| s.parse::<Resolution>();
         let res = |size, refresh| Resolution { size, refresh };
@@ -1568,17 +1892,5 @@ mod tests {
         ] {
             assert_eq!(parse(bad), Err(()), "{bad:?} should not parse");
         }
-    }
-}
-
-/// Spawn a command via `sh -c`, detached from the compositor.
-pub fn spawn(cmd: &str) {
-    let res = std::process::Command::new("/bin/sh")
-        .arg("-c")
-        .arg(cmd)
-        .spawn();
-    match res {
-        Ok(child) => info!("spawned {cmd:?} (pid {})", child.id()),
-        Err(err) => warn!("error spawning {cmd:?}: {err}"),
     }
 }

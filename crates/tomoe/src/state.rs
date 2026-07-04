@@ -58,6 +58,7 @@ use crate::cursor::Cursor;
 use crate::input::{Action, Bind};
 use crate::lock::LockState;
 use crate::lua::{KeyboardSettings, LuaRuntime, OutputProps, WinProps, WindowOp};
+use crate::process::{Launch, ProcessManager, ProcessSpec};
 use crate::space::PhysicalSpace;
 use crate::ui::Ui;
 
@@ -206,6 +207,13 @@ pub struct Tomoe {
     /// runs on every Lua entry) only rebuilds the keymap on real changes.
     applied_keyboard: KeyboardSettings,
 
+    /// Child processes: the `tomoe.process` manifest reconciler plus
+    /// fire-and-forget spawns (`process.rs`).
+    pub process: ProcessManager,
+    /// The 1 Hz supervision timer is registered (dropped when idle so an
+    /// empty manifest costs no wakeups).
+    process_timer_active: bool,
+
     pub ui: Ui,
     /// `--config` argument; the effective path is re-resolved on each check.
     config_cli_path: Option<PathBuf>,
@@ -345,6 +353,8 @@ impl Tomoe {
             lua,
             binds: Vec::new(),
             applied_keyboard: KeyboardSettings::default(),
+            process: ProcessManager::default(),
+            process_timer_active: false,
             ui: Ui::new(),
             config_cli_path: None,
             config_fingerprint: None,
@@ -356,6 +366,7 @@ impl Tomoe {
         self.config_cli_path = cli_path;
         let path = crate::lua::resolve_config_path(self.config_cli_path.as_deref());
         self.config_fingerprint = config_fingerprint(path.as_deref());
+        self.process.begin_generation(path.as_deref());
         if let Err(err) = self.lua.load(path.as_deref()) {
             warn!("config error (continuing with defaults): {err:#}");
             self.show_config_error(
@@ -363,6 +374,7 @@ impl Tomoe {
             );
         }
         self.apply_binds();
+        self.lua.mark_processes_dirty();
         self.after_lua();
     }
 
@@ -418,6 +430,12 @@ impl Tomoe {
         self.lua = new_lua;
         self.apply_binds();
         self.ui.config_error.hide();
+        // A new config generation: `once_per_config_version` entries become
+        // due, and the manifest is force-taken even if the fresh VM declared
+        // no processes — removal from the config is itself a diff that must
+        // stop the removed services.
+        self.process.begin_generation(path.as_deref());
+        self.lua.mark_processes_dirty();
 
         // The fresh VM has no WM state: hand every existing window to the new
         // config's hooks, oldest first, so it can rebuild its layout.
@@ -560,6 +578,13 @@ impl Tomoe {
             self.do_action(action);
         }
         self.in_lua = was_in_lua;
+        for spec in self.lua.take_spawns() {
+            self.process.spawn_detached(&spec);
+        }
+        if let Some(manifest) = self.lua.take_process_manifest() {
+            self.process.reconcile(&manifest);
+        }
+        self.ensure_process_timer();
         self.apply_keyboard_settings();
         crate::backend::tty::apply_libinput_settings(self);
         // Displays before scale: scale math reads output geometry. A mode
@@ -571,6 +596,28 @@ impl Tomoe {
         self.apply_scale();
         self.sync_snapshot();
         self.queue_redraw_all();
+    }
+
+    /// Keep the 1 Hz process-supervision timer alive exactly while there are
+    /// children to poll (`process.rs`); it drops itself when the last child
+    /// is reaped, so an idle session pays no wakeups for this.
+    fn ensure_process_timer(&mut self) {
+        if self.process_timer_active || !self.process.needs_supervision() {
+            return;
+        }
+        const TICK: Duration = Duration::from_secs(1);
+        let timer = Timer::from_duration(TICK);
+        match self.loop_handle.insert_source(timer, |_, _, tomoe| {
+            if tomoe.process.tick() {
+                TimeoutAction::ToDuration(TICK)
+            } else {
+                tomoe.process_timer_active = false;
+                TimeoutAction::Drop
+            }
+        }) {
+            Ok(_) => self.process_timer_active = true,
+            Err(err) => warn!("error inserting process supervision timer: {err}"),
+        }
     }
 
     /// Apply a changed `settings.keyboard` to the seat: recompile the xkb
@@ -1079,7 +1126,14 @@ impl Tomoe {
                 self.queue_redraw_all();
             }
             Action::ReloadConfig => self.reload_config(),
-            Action::Spawn(cmd) => crate::lua::spawn(&cmd),
+            Action::Spawn(cmd) => {
+                self.process.spawn_detached(&ProcessSpec {
+                    launch: Launch::Shell(cmd),
+                    cwd: None,
+                    env: Default::default(),
+                });
+                self.ensure_process_timer();
+            }
             Action::CloseWindow => {
                 if let Some(window) = self.focused_window() {
                     if let Some(toplevel) = window.toplevel() {

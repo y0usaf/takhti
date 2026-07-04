@@ -8,6 +8,7 @@ mod input;
 mod layout;
 mod lock;
 mod lua;
+mod process;
 mod protocols;
 mod render;
 mod screenshot;
@@ -166,6 +167,9 @@ fn main() -> Result<()> {
             }
         })
         .context("error running event loop")?;
+
+    // Managed services belong to the session; take them down with it.
+    tomoe.process.shutdown();
 
     Ok(())
 }

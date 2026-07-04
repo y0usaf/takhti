@@ -73,6 +73,19 @@ tomoe.settings {
   },
 }
 
+-- ─── Processes ───────────────────────────────────────────────────────────────
+-- Declarative manifest, diffed by id across config reloads: `once` runs
+-- session-bootstrap tasks, `service` keeps daemons (bars, notifications)
+-- alive, `tomoe.process.spawn { ... }` / `tomoe.spawn("...")` are
+-- fire-and-forget for event handlers. `command` is an argv array (or a
+-- string for `sh -c`); omitted, the id itself is the command.
+-- tomoe.process.once("fcitx5", { command = { "fcitx5", "-d" } })
+-- tomoe.process.service("waybar", { restart = "on_exit" })
+-- tomoe.process.service("mako", {
+--   restart = "on_failure",         -- or "never" | "on_exit" (default)
+--   reload = "keep_if_unchanged",   -- or "always_restart"
+-- })
+
 -- ─── Launch / close ──────────────────────────────────────────────────────────
 -- The optional third argument labels the bind in the hotkey overlay
 -- (Mod+Shift+/); Lua-function binds without one are omitted from it.

@@ -37,6 +37,11 @@ Done and working:
   (open/close/focus/outputs/pointer button+axis, hover enter/leave),
   pointer grabs, world camera (`set_view`), hot reload (fresh VM +
   `on_window_open` replay), watchdog
+- Process API (`tomoe.process.once/service/spawn`, ShojiWM-shape):
+  declarative manifest diffed by id across reloads, restart/reload
+  policies, 1 Hz supervision poll that also reaps fire-and-forget
+  children (`process.rs`); session/portal supervision still M4 §1's
+  remaining slice
 - Dogfood WMs: `wm.lua` (9 workspaces, dwindle, focus cycling),
   `zoomer.lua` (pan/zoom canvas, planes, drag move/resize)
 - Compositor UI: hotkey overlay, exit confirm, config-error banner,
@@ -166,9 +171,12 @@ Done and working:
 
 ### vs ShojiWM (extension surface)
 
-- [ ] Process API: `tomoe.process.once/service/spawn` declarative
+- [x] Process API: `tomoe.process.once/service/spawn` declarative
       manifest, diffed by id, restart policies
-      (`ref/ShojiWM/knowledges/process-api.md`)
+      (`ref/ShojiWM/knowledges/process-api.md`) — `process.rs`
+      ProcessManager + Lua manifest in `Shared`; 1 Hz polling supervision
+      timer (only alive while children exist) doubles as crash-loop rate
+      limit and zombie reaper; `tomoe.spawn` now reaps too
 - [ ] IPC: JSON socket + `tomoe msg` CLI + event stream +
       `tomoe.ipc.serve` for user-defined endpoints (bars/launchers)
 - [ ] Hot reload with state persistence: `tomoe.on_reload` /
@@ -368,11 +376,24 @@ scanout confirmed via drm_info; no idle redraw storms.*
 
 ### M4 — Phase 4: extension-surface parity with ShojiWM
 
-1. Process API (once/service/spawn manifest, restart/reload policies) —
-   note: M2's satellite/portal supervision is a natural first consumer;
-   session supervision belongs here too (installed `tomoe-session.target`
-   with `BindsTo=graphical-session.target`, pulled up by
-   `import_environment` — systemd refuses starting the target directly)
+1. ~~Process API~~ core landed (`process.rs` + `tomoe.process` in Lua,
+   ShojiWM-shape): manifest keyed by id, `once` (`run =
+   "once_per_session"|"once_per_config_version"`), `service` (`restart =
+   "never"|"on_failure"|"on_exit"`, `reload =
+   "keep_if_unchanged"|"always_restart"`), fire-and-forget `spawn`;
+   `command` = argv array or shell string (default: the id itself), `cwd`
+   (config-relative), `env`. Reconcile runs from `after_lua` when the
+   manifest changed; reload force-reconciles (fewer declarations = a diff
+   that stops services) and bumps the config generation. Supervision is a
+   1 Hz `try_wait` poll (per ShojiWM) — the tick period rate-limits crash
+   loops; the timer exists only while children do (no idle wakeups);
+   services are killed on compositor exit. Remaining slices: session
+   supervision (installed `tomoe-session.target` with
+   `BindsTo=graphical-session.target`, pulled up by `import_environment`
+   — systemd refuses starting the target directly), and migrating M2's
+   satellite/portal pre-start onto the manifest as builtin consumers.
+   Live check pending: waybar-style service surviving a config reload
+   with `keep_if_unchanged`, restart-after-crash cadence
 2. IPC socket + `tomoe msg` + event stream + `tomoe.ipc.serve`
 3. Hot reload with `on_reload` persist/restore (replace the
    window-replay hack)
