@@ -566,7 +566,6 @@ impl Tomoe {
         }
         self.apply_scale();
         self.sync_snapshot();
-        self.refresh_borders();
         self.queue_redraw_all();
     }
 
@@ -769,7 +768,6 @@ impl Tomoe {
                 }
             }
             self.focus_window(Some(&window));
-            self.refresh_borders();
             self.queue_redraw_all();
         }
     }
@@ -809,7 +807,6 @@ impl Tomoe {
         if !self.lua.has_window_open_hooks() {
             let next = self.space.elements().next_back().cloned();
             self.focus_window(next.as_ref());
-            self.refresh_borders();
         }
         self.queue_redraw_all();
     }
@@ -1049,7 +1046,6 @@ impl Tomoe {
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, focus, serial);
         }
-        self.refresh_borders();
 
         // Notify Lua about input-driven focus changes (not its own Focus ops).
         if !self.in_lua {

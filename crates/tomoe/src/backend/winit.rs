@@ -139,6 +139,9 @@ pub fn init(tomoe: &mut Tomoe) -> Result<()> {
 }
 
 pub fn redraw(tomoe: &mut Tomoe) {
+    // Render-path refresh: border buffers re-derive from live geometry/focus
+    // here, not on scattered events, so they can never be stale for a frame.
+    tomoe.refresh_borders();
     let (output_loc, output_size) = {
         let Backend::Winit(winit) = &tomoe.backend else {
             return;

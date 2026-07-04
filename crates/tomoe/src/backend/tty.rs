@@ -1289,6 +1289,9 @@ fn queue_estimated_vblank(
 }
 
 pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
+    // Render-path refresh: border buffers re-derive from live geometry/focus
+    // here, not on scattered events, so they can never be stale for a frame.
+    tomoe.refresh_borders();
     // Data that needs shared access to `tomoe`, gathered before splitting borrows.
     let output = {
         let Backend::Tty(data) = &tomoe.backend else {

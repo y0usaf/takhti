@@ -4,7 +4,13 @@
 use crate::state::Tomoe;
 
 impl Tomoe {
-    /// Update per-window border buffers (size + focus color) for mapped windows.
+    /// Update per-window border buffers (size + focus color) for mapped
+    /// windows. Runs on the render path (backends and capture), right before
+    /// border elements are built, so buffer sizes always match the live
+    /// committed geometry — event-driven refresh missed the client's
+    /// ack-commit after an initial configure, leaving stale slab sizes.
+    /// Cheap when nothing changed: `SolidColorBuffer::update` only bumps its
+    /// commit counter (damage) if size or color actually differ.
     pub fn refresh_borders(&mut self) {
         let settings = self.lua.settings();
         let width = settings.border_width;
@@ -19,10 +25,7 @@ impl Tomoe {
             } else {
                 settings.border_unfocused
             };
-            let buffers = self
-                .border_buffers
-                .entry(window.clone())
-                .or_insert_with(Default::default);
+            let buffers = self.border_buffers.entry(window.clone()).or_default();
             // Top, bottom, left, right slabs — a hollow frame rather than one
             // full-size rect, so transparent windows don't tint all over.
             buffers[0].update((geo.size.w + 2 * width, width), color);

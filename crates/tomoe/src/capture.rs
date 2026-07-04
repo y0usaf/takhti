@@ -198,6 +198,9 @@ impl<'a> SceneParts<'a> {
 /// need alongside them.
 macro_rules! split_tomoe {
     ($tomoe:expr) => {{
+        // Captures render outside the backends' redraw, so they refresh
+        // border buffers themselves before borrowing them immutably.
+        $tomoe.refresh_borders();
         let border_width = $tomoe.lua.settings().border_width;
         let pointer_pos = $tomoe
             .seat
