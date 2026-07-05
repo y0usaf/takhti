@@ -2,6 +2,8 @@ mod backend;
 mod capture;
 mod coords;
 mod cursor;
+#[cfg(test)]
+mod docgen;
 mod foreign_toplevel;
 mod handlers;
 mod input;

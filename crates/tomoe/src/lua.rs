@@ -1439,6 +1439,21 @@ impl LuaRuntime {
             .map_err(|err| format!("result not JSON-compatible: {err}"))
     }
 
+    /// Test-only access for docgen's API-parity checks.
+    #[cfg(test)]
+    pub(crate) fn lua(&self) -> &Lua {
+        &self.lua
+    }
+
+    /// A Window userdata with no backing window, for enumerating its methods.
+    #[cfg(test)]
+    pub(crate) fn test_window(&self) -> mlua::Result<mlua::AnyUserData> {
+        self.lua.create_userdata(LuaWindow {
+            id: 0,
+            shared: self.shared.clone(),
+        })
+    }
+
     pub fn has_window_open_hooks(&self) -> bool {
         !self.shared.hooks.borrow().window_open.is_empty()
     }
@@ -1813,7 +1828,10 @@ mod tests {
         assert!(rt.settings().wait_for_frame_completion);
         // A later partial settings call must not reset it (Option<bool>
         // parse: a missing key is not `false`).
-        rt.lua.load(r#"tomoe.settings { gaps = 4 }"#).exec().unwrap();
+        rt.lua
+            .load(r#"tomoe.settings { gaps = 4 }"#)
+            .exec()
+            .unwrap();
         assert!(rt.settings().wait_for_frame_completion);
     }
 

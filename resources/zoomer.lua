@@ -18,8 +18,21 @@
 -- grab_pointer, window requests (CSD titlebar/edge drags start the same
 -- move/resize grabs), and the view camera. Replace it wholesale if you like.
 
+---A zoomable-canvas WM: windows float on an infinite world canvas viewed
+---through the compositor camera, with independent planes each remembering
+---its own view. Preloaded as module "zoomer"; call `setup` to install its
+---hooks and binds (drag/pan/zoom map in the file header).
+---@class zoomer
 local M = {}
 
+---Options for `zoomer.setup`; every field optional.
+---@class ZoomerOpts
+---@field planes integer # number of planes (default 4)
+---@field zoom_step number # zoom factor per scroll step or keypress (default 1.2)
+---@field pan_step integer # keyboard pan distance in screen pixels (default 160)
+---@field open_size number # new windows take this fraction of the visible area (default 0.6)
+---@field min_size integer # minimum window dimension in pixels (default 64)
+---@field cascade integer # cascade offset between new windows (default 32)
 local cfg = {
   planes = 4,
   zoom_step = 1.2,
@@ -299,6 +312,10 @@ end
 
 -- ─── Setup ───────────────────────────────────────────────────────────────────
 
+---Create the planes and install hooks and default binds (Mod+drag to
+---move/resize/pan, Mod+scroll to zoom, Mod+1..9 planes — see the header).
+---@param opts ZoomerOpts?
+---@return zoomer
 function M.setup(opts)
   for k, v in pairs(opts or {}) do
     cfg[k] = v
@@ -328,8 +345,15 @@ function M.setup(opts)
   return M
 end
 
+---Switch to plane `n`, saving the current plane's camera.
+---@param n integer
 M.switch_plane = switch_plane
+
+---Step to the next (`step` = 1) or previous (`step` = -1) plane, wrapping.
+---@param step integer
 M.next_plane = next_plane
+
+---Fit the focused window to the visible area, or restore its saved geometry.
 M.toggle_fit = toggle_fit
 
 return M

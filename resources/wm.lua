@@ -10,6 +10,16 @@
 --   wm.gaps = 4
 --   tomoe.bind("Mod+1", function() wm.switch(1) end)
 
+---The default window manager: classic dwindle tiling with numbered
+---workspaces, built entirely on the public API. Preloaded as module "wm";
+---requiring it installs its hooks. All fields are plain data — mutate them
+---and call `arrange()`.
+---@class wm
+---@field gaps integer # gap between windows in physical pixels (default 8)
+---@field workspace_count integer # number of workspaces (default 9)
+---@field active integer # index of the visible workspace
+---@field workspaces Window[][] # workspaces[i] = ordered list of window objects
+---@field fullscreen table<integer, true> # fullscreen[window id] = true: excluded from tiling, covers its output
 local M = {
   gaps = 8,
   workspace_count = 9,
@@ -40,8 +50,9 @@ local function remove(list, win)
   end
 end
 
--- Classic dwindle: split the remaining area along its longer side.
--- Fullscreen windows keep their output-covering geometry and stay on top.
+---Retile the active workspace (classic dwindle: split the remaining area
+---along its longer side). Fullscreen windows keep their output-covering
+---geometry and stay on top.
 function M.arrange()
   local area = tomoe.usable_area()
   local wins, full = {}, {}
@@ -98,6 +109,11 @@ local function output_for(win, name)
   return outs[1]
 end
 
+---Fullscreen `win` on the output containing it (or on `output_name`), or
+---restore it back into the tiling.
+---@param win Window
+---@param on boolean
+---@param output_name string?
 function M.set_fullscreen(win, on, output_name)
   if on then
     local o = output_for(win, output_name)
@@ -115,6 +131,7 @@ function M.set_fullscreen(win, on, output_name)
   M.arrange()
 end
 
+---Toggle fullscreen for the focused window.
 function M.toggle_fullscreen()
   local win = tomoe.focused_window()
   if win then
@@ -122,6 +139,8 @@ function M.toggle_fullscreen()
   end
 end
 
+---Switch to workspace `n`, focusing its most recent window.
+---@param n integer
 function M.switch(n)
   if n == M.active or n < 1 or n > M.workspace_count then
     return
@@ -140,6 +159,8 @@ function M.switch(n)
   end
 end
 
+---Move the focused window to workspace `n`.
+---@param n integer
 function M.move_focused(n)
   if n == M.active or n < 1 or n > M.workspace_count then
     return
@@ -171,14 +192,17 @@ local function cycle(dir)
   wins[idx]:focus()
 end
 
+---Focus the next window on the active workspace.
 function M.focus_next()
   cycle(1)
 end
 
+---Focus the previous window on the active workspace.
 function M.focus_prev()
   cycle(-1)
 end
 
+---Close the focused window.
 function M.close_focused()
   local win = tomoe.focused_window()
   if win then
