@@ -1,21 +1,20 @@
-//! Native screenshots: render the current scene offscreen, then encode and
-//! save a PNG (plus best-effort `wl-copy` clipboard) off the main thread.
+//! Native screenshots: render the current scene offscreen, then encode a PNG
+//! and copy it to the clipboard via `wl-copy` off the main thread. Nothing is
+//! written to disk.
 
-use std::fs::File;
-use std::io::BufWriter;
-use std::path::PathBuf;
+use std::io::Write;
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 use smithay::output::Output;
 use smithay::utils::{Physical, Rectangle, Size};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::state::Tomoe;
 
 /// Capture `output` (cropped to `region` in output-local physical coordinates
-/// when given, the whole output otherwise), then encode and write the PNG on
-/// a detached thread so the compositor never blocks on disk I/O.
+/// when given, the whole output otherwise), then encode and copy the PNG to
+/// the clipboard on a detached thread so the compositor never blocks.
 pub fn screenshot(
     tomoe: &mut Tomoe,
     output: &Output,
@@ -24,28 +23,18 @@ pub fn screenshot(
     let (size, pixels) = crate::capture::capture_rgba(tomoe, output, region)
         .context("error capturing screenshot pixels")?;
 
-    std::thread::spawn(move || match save_png(size, &pixels) {
-        Ok(path) => {
-            info!("screenshot saved to {}", path.display());
-            copy_to_clipboard(&path);
-        }
-        Err(err) => warn!("error saving screenshot: {err:#}"),
+    std::thread::spawn(move || match encode_png(size, &pixels) {
+        Ok(png) => copy_to_clipboard(&png),
+        Err(err) => warn!("error encoding screenshot: {err:#}"),
     });
 
     Ok(())
 }
 
-/// Encode tightly packed RGBA8 `pixels` as a PNG under the screenshots
-/// directory; returns the written path.
-fn save_png(size: Size<i32, Physical>, pixels: &[u8]) -> Result<PathBuf> {
-    let dir = screenshots_dir();
-    std::fs::create_dir_all(&dir).with_context(|| format!("error creating {}", dir.display()))?;
-
-    let timestamp = jiff::Zoned::now().strftime("%Y-%m-%d-%H%M%S").to_string();
-    let path = dir.join(format!("Screenshot-{timestamp}.png"));
-
-    let file = File::create(&path).with_context(|| format!("error creating {}", path.display()))?;
-    let mut encoder = png::Encoder::new(BufWriter::new(file), size.w as u32, size.h as u32);
+/// Encode tightly packed RGBA8 `pixels` as an in-memory PNG.
+fn encode_png(size: Size<i32, Physical>, pixels: &[u8]) -> Result<Vec<u8>> {
+    let mut png = Vec::new();
+    let mut encoder = png::Encoder::new(&mut png, size.w as u32, size.h as u32);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().context("error writing PNG header")?;
@@ -53,47 +42,39 @@ fn save_png(size: Size<i32, Physical>, pixels: &[u8]) -> Result<PathBuf> {
         .write_image_data(pixels)
         .context("error writing PNG data")?;
     writer.finish().context("error finishing PNG")?;
-
-    Ok(path)
+    Ok(png)
 }
 
-/// `$XDG_PICTURES_DIR/Screenshots`, falling back to `~/Pictures/Screenshots`.
-fn screenshots_dir() -> PathBuf {
-    let pictures = std::env::var_os("XDG_PICTURES_DIR")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| {
-            let home = std::env::var_os("HOME").unwrap_or_default();
-            PathBuf::from(home).join("Pictures")
-        });
-    pictures.join("Screenshots")
-}
-
-/// Best-effort clipboard copy: pipe the written file into `wl-copy`. Missing
-/// wl-copy just logs a warning. Runs on the detached save thread, so waiting
-/// on the child is fine — and required, both to reap it (no zombies) and to
-/// surface failures instead of logging success unconditionally.
-fn copy_to_clipboard(path: &std::path::Path) {
-    let file = match File::open(path) {
-        Ok(file) => file,
+/// Pipe the PNG into `wl-copy`. Runs on the detached encode thread, so
+/// waiting on the child is fine — and required, both to reap it (no zombies)
+/// and to surface failures instead of logging success unconditionally.
+fn copy_to_clipboard(png: &[u8]) {
+    let mut child = match Command::new("wl-copy")
+        .args(["-t", "image/png"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
         Err(err) => {
-            warn!("error reopening screenshot for clipboard: {err}");
+            warn!("wl-copy unavailable, screenshot not copied to clipboard: {err}");
             return;
         }
     };
-    let output = Command::new("wl-copy")
-        .args(["-t", "image/png"])
-        .stdin(Stdio::from(file))
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output();
-    match output {
-        Ok(out) if out.status.success() => debug!("screenshot copied to clipboard via wl-copy"),
+    if let Some(mut stdin) = child.stdin.take() {
+        if let Err(err) = stdin.write_all(png) {
+            warn!("error writing screenshot to wl-copy: {err}");
+        }
+        // stdin drops here, closing the pipe so wl-copy can finish
+    }
+    match child.wait_with_output() {
+        Ok(out) if out.status.success() => info!("screenshot copied to clipboard"),
         Ok(out) => warn!(
             "wl-copy failed ({}), screenshot not copied to clipboard: {}",
             out.status,
             String::from_utf8_lossy(&out.stderr).trim()
         ),
-        Err(err) => warn!("wl-copy unavailable, screenshot not copied to clipboard: {err}"),
+        Err(err) => warn!("error waiting for wl-copy: {err}"),
     }
 }
