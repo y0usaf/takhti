@@ -46,6 +46,10 @@
             fileset = lib.fileset.unions [
               ./crates
               ./resources
+              # The docgen test compares docs/lua-api.md against what the
+              # sources generate; without it in the sandbox the test always
+              # reads an empty file and fails as "stale".
+              ./docs
               ./Cargo.toml
               ./Cargo.lock
             ];
