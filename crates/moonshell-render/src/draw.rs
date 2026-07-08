@@ -69,6 +69,7 @@ pub fn draw(
                 t.size * scale,
                 line,
                 t.color,
+                None,
             );
         }
         Element::Spacer(_) => {}
@@ -100,7 +101,8 @@ pub fn draw(
                     r.blit(canvas, width, height, x, y, &pm);
                 }
                 // nur's fallback contract: unresolvable icons render
-                // their name as text, sized to fit the box.
+                // their name as text, sized to fit the box — clipped to
+                // the box width so a long name can't overpaint siblings.
                 None => {
                     r.text_line(
                         canvas,
@@ -112,6 +114,7 @@ pub fn draw(
                         rect.h * 0.75,
                         rect.h,
                         i.color.unwrap_or(Rgba::new(0xff, 0xff, 0xff, 0xff)),
+                        Some(rect.w),
                     );
                 }
             }
@@ -312,6 +315,33 @@ mod tests {
         assert_eq!(pixel(&buf, 1, 1), &[255, 0, 0, 255], "image pixel");
         assert_eq!(pixel(&buf, 5, 1), &[0, 0, 0, 0], "outside the 4x4 image");
         std::fs::remove_file(&path).ok();
+    }
+
+    /// Icon name-fallback text is clipped to the icon box: a long name
+    /// must not overpaint siblings to its right (they'd also fall
+    /// outside the reported damage bounds).
+    #[test]
+    fn icon_fallback_text_clips_to_box() {
+        let mut r = Renderer::new();
+        let mut buf = vec![0u8; (W * H * 4) as usize];
+        let root = Element::HBox(Flex {
+            children: vec![Element::Icon(Icon {
+                name: "battery-full-very-long-name".into(),
+                size: 8.0,
+                ..Icon::default()
+            })],
+            ..Flex::default()
+        });
+        render_tree(&mut r, &mut buf, W, H, 1.0, &root);
+        for y in 0..H {
+            for x in 8..W {
+                assert_eq!(
+                    pixel(&buf, x, y),
+                    &[0, 0, 0, 0],
+                    "pixel ({x},{y}) outside the 8px box"
+                );
+            }
+        }
     }
 
     /// Icon element: SVG rasterized at the element size and centered.

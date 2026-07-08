@@ -226,7 +226,9 @@ impl Renderer {
 
     /// Shape and draw a single line of text with its top-left corner at
     /// `(x, y)` in buffer pixels. `font_px` is the physical font size.
-    /// Returns the advance width of the drawn line in buffer pixels.
+    /// `max_w` clips glyphs beyond `x + max_w` (icon fallback text must
+    /// stay inside its box instead of overpainting siblings); `None`
+    /// draws unclipped. Returns the advance width in buffer pixels.
     #[allow(clippy::too_many_arguments)]
     pub fn text_line(
         &mut self,
@@ -239,6 +241,7 @@ impl Renderer {
         font_px: f32,
         line_px: f32,
         color: Rgba,
+        max_w: Option<f32>,
     ) -> f32 {
         // cosmic-text panics ("no default font found") when the font
         // database is empty; a fontless system gets a bar without text,
@@ -255,11 +258,23 @@ impl Renderer {
             .fold(0.0_f32, f32::max);
 
         let src = cosmic_text::Color::rgba(color.r, color.g, color.b, color.a);
+        let clip_x1 = max_w.map(|w| x + w.round() as i32);
         buffer.draw(
             &mut self.font_system,
             &mut self.swash_cache,
             src,
             |gx, gy, gw, gh, c| {
+                let (gx, gw) = match clip_x1 {
+                    Some(x1) => {
+                        let gx0 = x + gx;
+                        let gx1 = (gx0 + gw as i32).min(x1);
+                        if gx1 <= gx0 {
+                            return;
+                        }
+                        (gx, (gx1 - gx0) as u32)
+                    }
+                    None => (gx, gw),
+                };
                 blend_rect(canvas, width, height, x + gx, y + gy, gw, gh, c);
             },
         );
@@ -410,6 +425,7 @@ mod tests {
             16.0,
             20.0,
             Rgba::new(255, 255, 255, 255),
+            None,
         );
         assert!(advance > 0.0, "no advance — shaping produced nothing");
         assert!(buf.iter().any(|&b| b != 0), "no pixels touched");

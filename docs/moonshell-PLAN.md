@@ -20,11 +20,14 @@ gate (budget 20 MB); 0 voluntary ctx switches over 5 s idle** (powertop
 unavailable — ctx-switch delta is the standing wakeup proxy); output
 disable/enable under headless sway survives (unmap → wait → remap).
 
-**M1 in progress**: §1 (element vocabulary + flex-lite layout + draw
-pass), §2 (icon/image elements + asset cache), and §3 (per-element
-damage diffing via `Scene`) landed 2026-07-08 — see the M1 breakdown
-below. Next open item: **M1 §4 acceptance** — nur `examples/simple-bar`
-tree as a static Rust table, visual parity check, RSS re-measure.
+**M1 done** (2026-07-08): §1 (element vocabulary + flex-lite layout +
+draw pass), §2 (icon/image elements + asset cache), §3 (per-element
+damage diffing via `Scene`), §4 (simple-bar acceptance fixture) — see
+the M1 breakdown below. Measured on the fixture: **14.5 MB RSS
+(release) with a full bar tree, 0 voluntary ctx switches over 5 s
+idle** — under the 25 MB full-bar budget with room for the Lua VM.
+Next open item: **M2 — Lua runtime** (mlua/LuaJIT, `shell.*`/`ui.*`,
+hot reload, conventions doc).
 
 Two working inputs exist:
 
@@ -161,8 +164,23 @@ M1 breakdown (element vocabulary; all in `render`, no Lua):
    `Canvas.fresh` (no committed content at this buffer size: first
    draw/remap/resize) — painter invalidates its scene, damage upgraded
    to Full.
-4. [ ] Accept: nur `examples/simple-bar` element tree as a static Rust
-   table renders visually ≡ nur-on-GPUI; re-measure RSS, record here.
+4. [x] Accept (2026-07-08): `crates/moonshell/examples/simple_bar.rs` —
+   nur's simple-bar tree as a static Rust table (mapping notes in the
+   file header: `items_center` → `align: Center`, `fill` → `grow: 1.0`,
+   `button` → styled hbox shell, theme tokens from nur's Mocha).
+   Renders correctly on the live tomoe session across all three
+   regions (grim-verified at 5120×1440). **Pixel A/B against
+   nur-on-GPUI is blocked on this machine**: nur has no tomoe
+   compositor backend, so its render callback dies and the bar maps
+   blank — the very gap moonshell M3 exists to fill; parity was
+   checked against nur's source-level layout semantics instead
+   (`crates/runtime/src/bridge/element.rs`). Revisit pixel A/B under a
+   shared compositor if it ever matters. Shook loose: icon
+   name-fallback text overflowed its box and overpainted siblings
+   (also outside the reported damage bounds) — `text_line` grew a
+   `max_w` clip, fallback now fits the box (regression test
+   `icon_fallback_text_clips_to_box`). Measured: 14.5 MB RSS release,
+   0 voluntary ctx switches / 5 s.
 
 Then M2 brings Lua in. Nothing Lua-shaped gets built in M0/M1 — the
 render core must be provably tiny before the runtime lands on top.
@@ -199,6 +217,14 @@ render core must be provably tiny before the runtime lands on top.
   exactly once at decode/rasterize time, mirroring `Rgba::to_skia`.
   resvg minor versions pin tiny-skia minors (0.47 ↔ 0.12); bump them
   together
+- From M1 §4: text drawn by elements must stay inside their layout
+  rect — the damage diff reports subtree *bounds*, so any overpaint is
+  also un-damaged pixels the compositor will trust; clip at the draw
+  call (`text_line(max_w)`), don't rely on measure == paint width for
+  fallback/degenerate content
+- From M1 §4: `pkill -f` patterns in dev scripts must not match the
+  invoking shell's own command line (quote a bracketed char:
+  `[s]imple_bar`)
 - From M1 §3: shm buffers alternate, so a partial-damage frame must
   either fully repaint (current: correctness by determinism —
   over-reported damage is always safe) or track per-slot buffer age

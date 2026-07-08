@@ -149,11 +149,16 @@ and the daily driver.
   *Done 2026-07-08: 6.9 MB idle RSS, 0 wakeups (ctx-switch proxy;
   see PLAN.md), unplug/replug verified under headless sway; RSS gate
   runs in CI as the `boot` flake check.*
-- [ ] **M1 — element vocabulary.** hbox/vbox/stack/text/spacer/separator/
+- [x] **M1 — element vocabulary.** hbox/vbox/stack/text/spacer/separator/
   icon (SVG via resvg)/image/progress/circular-progress; flex-lite layout
   (gap, padding, grow, align); per-element damage diffing.
   *Accept: nur's `examples/simple-bar` element tree, fed as a static
   table, renders visually identical to nur-on-GPUI.*
+  *Done 2026-07-08: `examples/simple_bar.rs` renders the full tree
+  correctly on tomoe; 14.5 MB RSS release, 0 idle wakeups. Pixel A/B
+  vs nur was blocked (nur lacks a tomoe backend and maps blank — the
+  M3 gap itself); parity verified against nur's source-level layout
+  semantics instead. See PLAN.md M1 §4.*
 - [ ] **M2 — Lua runtime.** mlua/LuaJIT; `shell.window/state/interval/
   once/exec/quit`, `ui.*` stdlib ported verbatim from nur; hot reload
   (inotify on the config tree, fresh VM, windows re-created); Lua
