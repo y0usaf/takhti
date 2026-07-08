@@ -7,4 +7,6 @@ license.workspace = true
 [dependencies]
 tiny-skia.workspace = true
 cosmic-text.workspace = true
+resvg.workspace = true
+image.workspace = true
 tracing.workspace = true

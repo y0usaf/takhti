@@ -16,6 +16,10 @@ smithay-client-toolkit = { version = "0.20", default-features = false, features 
 wayland-client = "0.31"
 tiny-skia = "0.12"
 cosmic-text = "0.19"
+# default features off: no SVG-embedded text/raster-images machinery —
+# icon themes are pure vector, and fontdb already lives in cosmic-text.
+resvg = { version = "0.47", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

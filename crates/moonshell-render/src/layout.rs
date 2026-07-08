@@ -82,6 +82,16 @@ fn measure(el: &Element, scale: f32, r: &mut Renderer) -> (f32, f32) {
             },
             Element::Progress(_) => (0.0, 0.0),
             Element::CircularProgress(c) => (c.size * scale, c.size * scale),
+            Element::Icon(i) => {
+                let px = (i.size * scale).ceil();
+                (px, px)
+            }
+            // Native file pixels map 1:1 to buffer pixels (crisp by
+            // default); style overrides rescale.
+            Element::Image(img) => match r.assets.image_size(&img.src) {
+                Some((w, h)) => (w as f32, h as f32),
+                None => (0.0, 0.0),
+            },
         }
     };
     // Overrides replace the intrinsic axis; the other axis still needs

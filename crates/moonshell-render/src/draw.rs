@@ -87,6 +87,44 @@ pub fn draw(
                 fill(r, canvas, width, height, filled, radius, p.color);
             }
         }
+        Element::Icon(i) => {
+            let px = rect.w.min(rect.h).max(0.0) as u32;
+            if px == 0 {
+                return;
+            }
+            match r.assets.icon(&i.name, i.path.as_deref(), px, i.color) {
+                Some(pm) => {
+                    // Centered in the (possibly non-square) rect.
+                    let x = (rect.x + (rect.w - px as f32) / 2.0).round() as i32;
+                    let y = (rect.y + (rect.h - px as f32) / 2.0).round() as i32;
+                    r.blit(canvas, width, height, x, y, &pm);
+                }
+                // nur's fallback contract: unresolvable icons render
+                // their name as text, sized to fit the box.
+                None => {
+                    r.text_line(
+                        canvas,
+                        width,
+                        height,
+                        rect.x as i32,
+                        rect.y as i32,
+                        &i.name,
+                        rect.h * 0.75,
+                        rect.h,
+                        i.color.unwrap_or(Rgba::new(0xff, 0xff, 0xff, 0xff)),
+                    );
+                }
+            }
+        }
+        Element::Image(img) => {
+            let (w, h) = (rect.w as u32, rect.h as u32);
+            if w == 0 || h == 0 {
+                return;
+            }
+            if let Some(pm) = r.assets.image(&img.src, w, h) {
+                r.blit(canvas, width, height, rect.x as i32, rect.y as i32, &pm);
+            }
+        }
         Element::CircularProgress(c) => {
             let thickness = c.thickness * scale;
             let radius = ((rect.w.min(rect.h) - thickness) / 2.0).max(0.0);
@@ -246,5 +284,60 @@ mod tests {
         });
         render_tree(&mut r, &mut buf, W, H, 1.0, &root);
         assert_eq!(pixel(&buf, 0, 0), &[30, 20, 20, 255], "bg fills the rect");
+    }
+
+    fn tmp(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("moonshell-draw-{}-{name}", std::process::id()))
+    }
+
+    /// Image element: intrinsic sizing from the file, blitted into the
+    /// canvas through layout + draw.
+    #[test]
+    fn image_measures_and_blits() {
+        let path = tmp("img.png");
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 0, 255, 255]))
+            .save(&path)
+            .unwrap();
+        let mut r = Renderer::new();
+        let mut buf = vec![0u8; (W * H * 4) as usize];
+        let root = Element::HBox(Flex {
+            children: vec![Element::Image(Image {
+                src: path.clone(),
+                ..Image::default()
+            })],
+            ..Flex::default()
+        });
+        render_tree(&mut r, &mut buf, W, H, 1.0, &root);
+        // Blue in buffer order [B, G, R, A], at 1:1 native size.
+        assert_eq!(pixel(&buf, 1, 1), &[255, 0, 0, 255], "image pixel");
+        assert_eq!(pixel(&buf, 5, 1), &[0, 0, 0, 0], "outside the 4x4 image");
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// Icon element: SVG rasterized at the element size and centered.
+    #[test]
+    fn icon_rasterizes_via_tree() {
+        let path = tmp("icon.svg");
+        std::fs::write(
+            &path,
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4">
+                 <rect width="4" height="4" fill="#ff0000"/></svg>"##,
+        )
+        .unwrap();
+        let mut r = Renderer::new();
+        let mut buf = vec![0u8; (W * H * 4) as usize];
+        let root = Element::HBox(Flex {
+            align: Align::Center,
+            children: vec![Element::Icon(Icon {
+                path: Some(path.clone()),
+                size: 8.0,
+                ..Icon::default()
+            })],
+            ..Flex::default()
+        });
+        render_tree(&mut r, &mut buf, W, H, 1.0, &root);
+        // 8x8 icon centered vertically in the 8-tall canvas: full column.
+        assert_eq!(pixel(&buf, 4, 4), &[0, 0, 255, 255], "red icon pixel");
+        std::fs::remove_file(&path).ok();
     }
 }

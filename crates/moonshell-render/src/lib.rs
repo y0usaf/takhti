@@ -12,6 +12,7 @@
 //! once, inside [`Rgba::to_skia`], and tiny-skia then writes correct
 //! ARGB8888 memory without any post-pass.
 
+mod assets;
 pub mod draw;
 pub mod element;
 pub mod layout;
@@ -24,7 +25,7 @@ use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, SwashCache};
 use tiny_skia::{FillRule, Paint, PathBuilder, PixmapMut, Rect, Stroke, Transform};
 
 /// Straight-alpha color as the caller thinks of it (CSS-style RGBA).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Rgba {
     pub r: u8,
     pub g: u8,
@@ -49,6 +50,9 @@ impl Rgba {
 pub struct Renderer {
     font_system: FontSystem,
     swash_cache: SwashCache,
+    /// Decoded icon/image pixmaps (see `assets`); part of the same
+    /// cache budget as the glyph caches.
+    pub(crate) assets: assets::AssetCache,
 }
 
 impl Renderer {
@@ -58,7 +62,33 @@ impl Renderer {
         Self {
             font_system: FontSystem::new(),
             swash_cache: SwashCache::new(),
+            assets: assets::AssetCache::default(),
         }
+    }
+
+    /// Src-over a cached pixmap (already premultiplied and in buffer
+    /// byte order) onto the canvas at `(x, y)`. Pixmaps are pre-scaled
+    /// to their target size, so no filtering happens here.
+    pub(crate) fn blit(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        x: i32,
+        y: i32,
+        pm: &tiny_skia::Pixmap,
+    ) {
+        let Some(mut dst) = pixmap(canvas, width, height) else {
+            return;
+        };
+        dst.draw_pixmap(
+            x,
+            y,
+            pm.as_ref(),
+            &tiny_skia::PixmapPaint::default(),
+            Transform::identity(),
+            None,
+        );
     }
 
     /// Fill the whole canvas with `color`.

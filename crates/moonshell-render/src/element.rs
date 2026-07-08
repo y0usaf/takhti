@@ -12,6 +12,8 @@
 //! All lengths in element props are **logical pixels**; the layout pass
 //! multiplies by the output scale exactly once.
 
+use std::path::PathBuf;
+
 use crate::Rgba;
 
 /// Per-side lengths (logical px) for padding.
@@ -203,8 +205,44 @@ impl Default for CircularProgress {
     }
 }
 
-/// The element tree node. Icon (SVG via resvg) and Image land in the
-/// next M1 slice (PLAN.md).
+/// Square SVG icon. Resolution order (nur's `ui.icon` contract):
+/// explicit `path` first, then `{name}.svg` searched through the XDG
+/// icon theme dirs; if neither resolves, the name is drawn as text.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Icon {
+    pub style: Style,
+    /// Icon-theme name (looked up as `{name}.svg`).
+    pub name: String,
+    /// Explicit SVG file path; overrides theme lookup.
+    pub path: Option<PathBuf>,
+    /// Square edge length (logical px).
+    pub size: f32,
+    /// Monochrome tint: the SVG's alpha is kept, its color replaced.
+    pub color: Option<Rgba>,
+}
+
+impl Default for Icon {
+    fn default() -> Self {
+        Self {
+            style: Style::default(),
+            name: String::new(),
+            path: None,
+            size: 16.0,
+            color: None,
+        }
+    }
+}
+
+/// Raster image (png/jpeg) from a file path. Intrinsic size is the
+/// file's pixel dimensions mapped 1:1 to buffer pixels (crisp by
+/// default); `style.width`/`height` (logical px) override and rescale.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Image {
+    pub style: Style,
+    pub src: PathBuf,
+}
+
+/// The element tree node.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Element {
     HBox(Flex),
@@ -215,6 +253,8 @@ pub enum Element {
     Separator(Separator),
     Progress(Progress),
     CircularProgress(CircularProgress),
+    Icon(Icon),
+    Image(Image),
 }
 
 impl Element {
@@ -228,6 +268,8 @@ impl Element {
             Element::Separator(e) => &e.style,
             Element::Progress(e) => &e.style,
             Element::CircularProgress(e) => &e.style,
+            Element::Icon(e) => &e.style,
+            Element::Image(e) => &e.style,
         }
     }
 }
