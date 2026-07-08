@@ -22,6 +22,7 @@
             fileset = lib.fileset.unions [
               ./crates
               ./lua # the ui.* stdlib, include_str!'d by crates/runtime
+              ./examples # simple-bar acceptance fixture, include_str!'d by runtime tests
               ./Cargo.toml
               ./Cargo.lock
             ];

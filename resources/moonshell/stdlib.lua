@@ -3,9 +3,9 @@
 -- Populates the `ui` table (created empty by Rust) with pure-Lua element
 -- constructors. Rust-backed native components are added separately.
 --
--- Deferred pieces of the nur stdlib (they land with the theme port and
--- shell.window, M2 §6): the theme-aware shell.window wrapper and
--- ui.bar_layout — both require `moonshell.theme` and the `shell` global.
+-- The `shell`-dependent half of nur's stdlib (the theme-aware
+-- shell.window wrapper, shell.services) lives in shell_ext.lua, loaded
+-- after the Rust `shell.*` API is registered.
 
 -- ---------------------------------------------------------------------------
 -- Layout
@@ -214,4 +214,21 @@ end
 -- without introducing a wrapper container.
 function ui.fragment(children)
     return children
+end
+
+-- ---------------------------------------------------------------------------
+-- Convenience helpers
+-- ---------------------------------------------------------------------------
+
+-- Build a horizontal bar section with left / center / right regions.
+-- Spacing comes from the theme so bar_layout respects user customization.
+function ui.bar_layout(left, center, right)
+    local theme = require("moonshell.theme")
+    local pad = theme.bar_padding
+    local gap = theme.widget_gap
+    return ui.hbox({ fill = true, padding_left = pad, padding_right = pad, children = {
+        ui.hbox({ gap = gap, fill = true,                    children = left   or {} }),
+        ui.hbox({ gap = gap, fill = true, justify = "center", children = center or {} }),
+        ui.hbox({ gap = gap, fill = true, justify = "end",   children = right  or {} }),
+    }})
 end

@@ -46,9 +46,19 @@ instance (calloop `Generic` on a dup'd fd) watches the config tree;
 `.lua` changes debounce (100 ms) into a full VM swap; `shell.reload()`
 takes the same path by flag; `shell.watch_file` rides the same watcher.
 Live on tomoe: **7.3 MB RSS idle (release), 0 voluntary ctx
-switches / 5 s; 10 successive hot reloads → zero RSS growth**. Next
-open item: **M2 §6 — stdlib completion + acceptance** (see the M2
-breakdown below).
+switches / 5 s; 10 successive hot reloads → zero RSS growth**. §6 done
+(2026-07-08) — **M2 complete**: theme/utils/widgets ported to
+`lua/moonshell/`, `package.preload` registration with `nur.*` aliases,
+`ui.bar_layout` + theme-aware `shell.window` wrapper, placeholder
+`shell.services.*` facades, Lua conventions doc landed in
+`~/Dev/design/conventions/lua.md`. **nur's `examples/simple-bar/
+init.lua` runs byte-for-byte unmodified** (vendored as the acceptance
+fixture; CI test `nur_simple_bar_runs_unmodified`). Live on tomoe:
+**17.4 MB RSS (release) with the full bar + 1 Hz clock (budget 25 MB);
+wakeups only from the live timer (≈3 ctx switches per tick, zero
+otherwise); live edit → reload verified, RSS stable across reloads**.
+Next open item: **M3 — services, natively** (start with the tomoe
+compositor backend + `$TOMOE_SOCKET`, per the interconnection tracker).
 
 Two working inputs exist:
 
@@ -67,10 +77,17 @@ Two working inputs exist:
 
 ### vs nur (the port)
 
-- [ ] `shell.window / get_window / state / interval / once / exec /
-      quit / clipboard / displays / reload` — API surface (M2)
-- [ ] `ui.*` stdlib + `theme.lua` + `utils.lua` ported verbatim (M2)
-- [ ] Widgets: clock, battery, workspaces, network, mpris (M3)
+- [x] `shell.window / get_window / state / interval / once / exec /
+      quit / displays / reload` — API surface (M2; `clipboard` needs a
+      data-control protocol → M4)
+- [x] `ui.*` stdlib + `theme.lua` + `utils.lua` ported verbatim (M2;
+      bundled modules preload under `moonshell.*` *and* `nur.*` — the
+      alias delegates through `require`, one shared instance)
+- [x] Widgets ported as Lua modules: clock, battery, workspaces,
+      network, mpris, volume_panel, media_panel (M2 — render against
+      placeholder services until M3; panel open/close needs M4 clicks +
+      `handle:close`). Not ported: system_tray, bar_overlay, wallust
+      (need the tray service / more surface — M3/M4)
 - [ ] Services: applications (.desktop scan + inotify), battery,
       audio, network, bluetooth, mpris, notifications daemon,
       power-profiles, sysinfo, system tray (SNI), compositor
@@ -118,9 +135,10 @@ Two working inputs exist:
       vocabulary should be is designed *with* tomoe (its PLAN.md
       "moonshell-driven" section) — first real test of doctrine 03's
       wire/vocabulary split.
-- [ ] M2: shared Lua conventions doc in `~/Dev/design/` (settings-table
-      shape, `on_*` naming, reload contract) — written when the second
-      consumer (us) exists, kept out of both codebases.
+- [x] M2: shared Lua conventions doc landed 2026-07-08 as
+      `~/Dev/design/conventions/lua.md` (API global, settings tables,
+      module shape, `on_*` naming, `Mod`, the reload contract) — tomoe
+      and moonshell both cite it instead of restating.
 - [ ] post-M3: tomoe ships a default moonshell bar config as content;
       combined home-manager module composes both flakes.
 - [ ] M3+: taskbar widget rides ext-foreign-toplevel-list-ish data per
@@ -315,14 +333,28 @@ M2 breakdown (the Lua runtime):
    degrades to manual `shell.reload()` with a warning. Measured live
    on tomoe (release): 7.3 MB RSS idle, 0 voluntary ctx switches /
    5 s, 10 successive reloads with zero RSS growth.
-6. [ ] stdlib completion + acceptance: port `theme.lua`/`utils.lua` +
-   widget modules' `package.preload` registration; land `ui.bar_layout`
-   and the theme-aware `shell.window` wrapper; Lua conventions doc in
-   `~/Dev/design/`. **Accept-criterion conflict to resolve**: nur's
-   `simple-bar/init.lua` reads `shell.services.*` (M3) — §6 ships
-   placeholder service facades (static state, `:get()`/`:subscribe()`
-   shaped) so the config runs unmodified; real backends replace them
-   in M3. Measure RSS (< 25 MB) + idle wakeups here.
+6. [x] stdlib completion + acceptance (2026-07-08): `theme.lua`/
+   `utils.lua`/7 widget modules ported to `lua/moonshell/` (utils:
+   `math.tointeger` guarded — LuaJIT is 5.1-based; integral floats
+   already print bare). `Vm::new` registers every bundled module in
+   `package.preload` under `moonshell.*` *and* a `nur.*` alias whose
+   loader is `require("moonshell.X")` — one shared instance, so a nur
+   config's `theme:set(...)` drives the same table the `shell.window`
+   wrapper reads (regression test `theme_set_flows_into_window_
+   defaults`). `shell`-dependent policy (theme-aware `shell.window`
+   wrapper, `shell.services`) lives in `shell_ext.lua`, loaded by
+   `install_shell` after the Rust API registers — stdlib.lua stays
+   VM-boot-time (`ui.bar_layout` requires the theme lazily).
+   `moonshell/services.lua` is the doctrine-05 facade declarator:
+   `services.define(name, initial, actions)` → nur's handle shape
+   (`:get/:set/:map/:subscribe` over `shell.state` + named actions);
+   M2 ships sysinfo/compositor/battery/network/audio/mpris as static
+   placeholders (actions warn once to stderr), M3 replaces the backing
+   through the same `:set()` path. Acceptance: nur's simple-bar
+   init.lua vendored byte-for-byte at `examples/simple-bar/` (flake
+   fileset grew `./examples`), exercised in CI down to the parsed
+   element tree. Live: 17.4 MB RSS release, wakeups only from the 1 Hz
+   clock, live-edit reload verified, RSS stable.
 
 Nothing Lua-shaped was built in M0/M1 — the render core was provably
 tiny before the runtime landed on top.
@@ -367,6 +399,11 @@ tiny before the runtime landed on top.
 - From M1 §4: `pkill -f` patterns in dev scripts must not match the
   invoking shell's own command line (quote a bracketed char:
   `[s]imple_bar`)
+- From M2 §6: the same applies to *measurement* — `pgrep -f` can match
+  a wrapping `bash -c` line whose /proc numbers look plausible (a
+  2.3 MB "RSS" was the wrapper shell); match on the binary path
+  (`target/release/[m]oonshell`) and sanity-check ctx switches against
+  expected timer cadence before recording
 - From M2 §1: mlua's vendored LuaJIT (`luajit-src`) shells out to
   `make`/`cc` at build time — builds must run inside the devshell/
   sandbox (stdenv provides both); a bare `cargo build` on the host

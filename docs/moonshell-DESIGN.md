@@ -159,12 +159,18 @@ and the daily driver.
   vs nur was blocked (nur lacks a tomoe backend and maps blank — the
   M3 gap itself); parity verified against nur's source-level layout
   semantics instead. See PLAN.md M1 §4.*
-- [ ] **M2 — Lua runtime.** mlua/LuaJIT; `shell.window/state/interval/
+- [x] **M2 — Lua runtime.** mlua/LuaJIT; `shell.window/state/interval/
   once/exec/quit`, `ui.*` stdlib ported verbatim from nur; hot reload
   (inotify on the config tree, fresh VM, windows re-created); Lua
   conventions doc landed in `~/Dev/design/`.
   *Accept: nur's `simple-bar/init.lua` runs unmodified; editing it
   live-reloads without restart; idle RSS still under 25 MB.*
+  *Done 2026-07-08: the fixture runs byte-for-byte unmodified (nur
+  module names alias to the moonshell modules; placeholder
+  `shell.services.*` facades until M3); live edit → reload verified;
+  17.4 MB RSS release with the full bar + 1 Hz clock, wakeups only
+  from the timer. Conventions doc: `~/Dev/design/conventions/lua.md`.
+  See PLAN.md M2 §1–§6.*
 - [ ] **M3 — services, natively.** zbus: UPower, MPRIS, NetworkManager,
   notifications daemon, SNI tray, PowerProfiles; sysfs battery fallback;
   compositor backends: **tomoe** (`$TOMOE_SOCKET`, subscribe stream),
