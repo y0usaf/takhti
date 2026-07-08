@@ -46,6 +46,12 @@ function tomoe.clear_focus() end
 ---@return Window[]
 function tomoe.windows() end
 
+---Look up a window by its stable id (e.g. ids persisted through
+---tomoe.on_reload); nil if it no longer exists.
+---@param id integer
+---@return Window?
+function tomoe.window(id) end
+
 ---The keyboard-focused window, if any.
 ---@return Window?
 function tomoe.focused_window() end
@@ -195,6 +201,18 @@ function tomoe.grab_pointer(on_motion, on_release) end
 
 ---End the active grab without running its release callback.
 function tomoe.ungrab_pointer() end
+
+---Persist config state across reloads. `save` runs in the outgoing config
+---just before the new one takes over and must return a JSON-compatible
+---value (window handles don't survive — persist ids and look them back up
+---with tomoe.window); `restore` runs in the new config with that value
+---after it loads. Keyed by `name` so independent modules persist
+---independently. When any restore hook runs, the core skips the
+---on_window_open replay of existing windows — restored state supersedes it.
+---@param name string
+---@param save fun(): any
+---@param restore fun(state: any)
+function tomoe.on_reload(name, save, restore) end
 
 -- ─── Processes ────────────────────────────────────────────────────────────────
 

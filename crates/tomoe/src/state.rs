@@ -435,6 +435,13 @@ impl Tomoe {
             return;
         }
 
+        // Persist config-owned state out of the old VM (`tomoe.on_reload`
+        // save hooks) — only now, after the new config loaded, so a broken
+        // config never disturbs the running one. Values cross as JSON; ops a
+        // save hook might queue die with the VM (save is a read-only affair).
+        self.sync_snapshot();
+        let saved = self.lua.save_reload_state();
+
         self.lua = new_lua;
         self.apply_binds();
         self.ui.config_error.hide();
@@ -445,21 +452,26 @@ impl Tomoe {
         self.process.begin_generation(path.as_deref());
         self.lua.mark_processes_dirty();
 
-        // The fresh VM has no WM state: hand every existing window to the new
-        // config's hooks, oldest first, so it can rebuild its layout.
+        // The fresh VM has no WM state. Preferred path: hand the old VM's
+        // saved state to the new config's `tomoe.on_reload` restore hooks.
+        // Fallback (no restore ran — the config doesn't persist): replay
+        // every existing window through on_window_open, oldest first, so it
+        // can rebuild its layout. Never both — a restored WM replaying opens
+        // would track every window twice.
         self.sync_snapshot();
-        if self.lua.has_window_open_hooks() {
+        let was_in_lua = self.in_lua;
+        self.in_lua = true;
+        let restored = self.lua.restore_reload_state(&saved);
+        if restored == 0 && self.lua.has_window_open_hooks() {
             let mut ids: Vec<u64> = self.windows.keys().copied().collect();
             ids.sort_unstable();
-            let was_in_lua = self.in_lua;
-            self.in_lua = true;
             for id in ids {
                 self.lua.emit_window_open(id);
             }
-            self.in_lua = was_in_lua;
         }
+        self.in_lua = was_in_lua;
         self.after_lua();
-        info!("config reloaded");
+        info!("config reloaded ({restored} on_reload state(s) restored)");
     }
 
     /// Show the config-error banner and schedule the repaint that removes it

@@ -86,6 +86,7 @@ crate tomoe
 │   ├── struct PointerButtonData: pub
 │   ├── struct PointerGrab: pub(self)
 │   ├── enum RefreshSetting: pub
+│   ├── struct ReloadHooks: pub(self)
 │   ├── struct Resolution: pub
 │   ├── enum ScrollMethod: pub
 │   ├── struct Settings: pub

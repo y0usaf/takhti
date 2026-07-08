@@ -286,6 +286,74 @@ tomoe.on_window_request(function(ev)
   end
 end)
 
+-- Survive config reloads: persist plane membership (window ids in stacking
+-- order), per-plane cameras, and the fit-toggle geometry, and rebuild into
+-- the planes the new config's setup() created.
+tomoe.on_reload("zoomer", function()
+  if planes[current] then
+    planes[current].view = tomoe.view()
+  end
+  local ps = {}
+  for _, plane in ipairs(planes) do
+    local ids = {}
+    for _, win in ipairs(plane.wins) do
+      ids[#ids + 1] = win:id()
+    end
+    ps[#ps + 1] = { view = plane.view, wins = ids }
+  end
+  local fit = {}
+  for id, g in pairs(fit_saved) do
+    fit[#fit + 1] = { id = id, x = g.x, y = g.y, w = g.w, h = g.h }
+  end
+  return { current = current, planes = ps, fit = fit }
+end, function(state)
+  if #planes == 0 then
+    -- The new config never called setup(); nothing to restore into.
+    return
+  end
+  local seen = {}
+  for i, plane in ipairs(planes) do
+    local saved = state.planes and state.planes[i]
+    if saved then
+      if saved.view and saved.view.zoom then
+        plane.view = saved.view
+      end
+      for _, id in ipairs(saved.wins or {}) do
+        local win = tomoe.window(id)
+        if win then
+          table.insert(plane.wins, win)
+          seen[id] = true
+        end
+      end
+    end
+  end
+  current = clamp(state.current or 1, 1, #planes)
+  -- Windows the old config didn't track (or whose plane fell beyond a
+  -- reduced plane count) land on the current plane.
+  for _, win in ipairs(tomoe.windows()) do
+    if not seen[win:id()] then
+      table.insert(planes[current].wins, win)
+    end
+  end
+  fit_saved = {}
+  for _, f in ipairs(state.fit or {}) do
+    if seen[f.id] then
+      fit_saved[f.id] = { x = f.x, y = f.y, w = f.w, h = f.h }
+    end
+  end
+  for i, plane in ipairs(planes) do
+    for _, win in ipairs(plane.wins) do
+      if i == current then
+        win:show()
+      else
+        win:hide()
+      end
+    end
+  end
+  tomoe.set_view(planes[current].view)
+  focus_top(planes[current])
+end)
+
 -- ─── Fit toggle ──────────────────────────────────────────────────────────────
 
 local function toggle_fit()

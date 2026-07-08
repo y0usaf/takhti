@@ -35,11 +35,13 @@ Done and working:
 - Lua runtime: binds (Mod-agnostic), spawn, settings (gaps/scale/border/
   displays/focus-follows-mouse), window handles + queued ops, hooks
   (open/close/focus/outputs/pointer button+axis, hover enter/leave),
-  pointer grabs, world camera (`set_view`), hot reload (fresh VM +
-  `on_window_open` replay). NB: the doctrine-02 dispatch *watchdog* is
-  still unimplemented (no mlua hook/instruction limit anywhere) despite
-  earlier claims here — a hung hook or `tomoe.ipc.serve` handler blocks
-  the loop; worth pairing with M4 §3's reload work
+  pointer grabs, world camera (`set_view`), hot reload with state
+  persistence (`tomoe.on_reload(name, save, restore)`: save runs in the
+  outgoing VM, values cross as JSON, restore runs in the fresh VM;
+  `on_window_open` replay is the fallback when no restore ran). NB: the
+  doctrine-02 dispatch *watchdog* is still unimplemented (no mlua
+  hook/instruction limit anywhere) despite earlier claims here — a hung
+  hook or `tomoe.ipc.serve` handler blocks the loop
 - Process API (`tomoe.process.once/service/spawn`, ShojiWM-shape):
   declarative manifest diffed by id across reloads, restart/reload
   policies, 1 Hz supervision poll that also reaps fire-and-forget
@@ -195,9 +197,11 @@ Done and working:
       `tomoe.ipc.serve` for user-defined endpoints (bars/launchers) —
       `tomoe-ipc` wire crate (WIRE_VERSION, ShojiWM-shape ndjson frames)
       + calloop-hosted server in `ipc.rs`
-- [ ] Hot reload with state persistence: `tomoe.on_reload` /
-      persist-restore so workspaces survive a reload without replay hacks
-      (`ref/ShojiWM/packages/config/src/index.tsx` onEnable/onDisable)
+- [x] Hot reload with state persistence: `tomoe.on_reload(name, save,
+      restore)` (ShojiWM's onDisable/onEnable-with-persist shape, keyed by
+      name so modules persist independently); `tomoe.window(id)` maps
+      persisted ids back to handles; dogfooded by `wm.lua` (workspaces/
+      active/fullscreen) and `zoomer.lua` (planes/cameras/fit)
 - [x] Request events surfaced to Lua: maximize/minimize/fullscreen via
       `tomoe.on_window_request` (ShojiWM's `onWindow*Request` family);
       activate requests wait on xdg-activation (M5)
@@ -458,8 +462,16 @@ scanout confirmed via drm_info; no idle redraw storms.*
    Verified live on winit: all builtins, Lua echo endpoint, subscribe
    stream (broadcast + window open/close/focus on a real foot window),
    error paths, `quit` + socket unlink
-3. Hot reload with `on_reload` persist/restore (replace the
-   window-replay hack)
+3. ~~Hot reload with `on_reload` persist/restore~~ done —
+   `tomoe.on_reload(name, save, restore)`: save hooks run in the outgoing
+   VM (only after the new config loaded, so a broken config never
+   disturbs the running one) and return JSON-compatible values — the only
+   representation that outlives the VM; restore hooks run in the fresh VM
+   with their key's value after load. The `on_window_open` replay remains
+   as the fallback for configs that don't persist (restored + replayed
+   would double-track windows, so it's either/or). `tomoe.window(id)`
+   looks persisted ids back up. Verified live: window moved to workspace
+   2 stays there across a reload (IPC-driven wm state dump)
 4. Window rules
 5. LuaLS meta files; example configs exercising all of the above
 6. `tomoe.ui` registry — retained widgets (menu/confirm/toast) + modal

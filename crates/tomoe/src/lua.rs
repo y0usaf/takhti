@@ -607,6 +607,13 @@ struct PointerGrab {
     release: Option<RegistryKey>,
 }
 
+/// A `tomoe.on_reload` registration: `save` runs in the outgoing VM at
+/// reload, `restore` runs in the fresh VM with the saved (JSON) value.
+struct ReloadHooks {
+    save: RegistryKey,
+    restore: RegistryKey,
+}
+
 #[derive(Default)]
 struct Shared {
     actions: RefCell<Vec<Action>>,
@@ -638,6 +645,9 @@ struct Shared {
     /// entry. Payloads convert to JSON at call time — the queue never holds
     /// live Lua values.
     ipc_broadcasts: RefCell<Vec<(String, serde_json::Value)>>,
+    /// `tomoe.on_reload` persist/restore hooks, keyed by name so independent
+    /// modules persist independently across config reloads.
+    reload_hooks: RefCell<HashMap<String, ReloadHooks>>,
 }
 
 // ─── Window userdata ──────────────────────────────────────────────────────────
@@ -1123,6 +1133,19 @@ impl LuaRuntime {
             })?,
         )?;
 
+        // tomoe.window(id) -> window | nil — look up a window by its stable
+        // id (e.g. ids persisted through tomoe.on_reload).
+        let s = shared.clone();
+        tomoe.set(
+            "window",
+            lua.create_function(move |_, id: u64| {
+                Ok(s.windows.borrow().contains_key(&id).then(|| LuaWindow {
+                    id,
+                    shared: s.clone(),
+                }))
+            })?,
+        )?;
+
         // tomoe.focused_window() -> window | nil
         let s = shared.clone();
         tomoe.set(
@@ -1264,6 +1287,28 @@ impl LuaRuntime {
                 s.grab.borrow_mut().take();
                 Ok(())
             })?,
+        )?;
+
+        // tomoe.on_reload(name, save, restore) — persist config state across
+        // reloads: `save` runs in the outgoing VM and must return a
+        // JSON-compatible value (window handles don't survive — persist
+        // ids); `restore` runs in the fresh VM with that value after the new
+        // config loads. Keyed by name so independent modules persist
+        // independently. When any restore hook runs, the core skips the
+        // on_window_open replay — restored state supersedes it.
+        let s = shared.clone();
+        tomoe.set(
+            "on_reload",
+            lua.create_function(
+                move |lua, (name, save, restore): (String, Function, Function)| {
+                    let save = lua.create_registry_value(save)?;
+                    let restore = lua.create_registry_value(restore)?;
+                    s.reload_hooks
+                        .borrow_mut()
+                        .insert(name, ReloadHooks { save, restore });
+                    Ok(())
+                },
+            )?,
         )?;
 
         // Event hooks.
@@ -1436,6 +1481,77 @@ impl LuaRuntime {
         self.lua
             .from_value(result)
             .map_err(|err| format!("result not JSON-compatible: {err}"))
+    }
+
+    /// Run every `tomoe.on_reload` save hook (this is the outgoing VM),
+    /// serializing the returned values to JSON — the only representation
+    /// that can outlive the VM and cross into the fresh one.
+    pub fn save_reload_state(&mut self) -> HashMap<String, serde_json::Value> {
+        let funcs: Vec<(String, mlua::Result<Function>)> = {
+            let hooks = self.shared.reload_hooks.borrow();
+            hooks
+                .iter()
+                .map(|(name, h)| (name.clone(), self.lua.registry_value::<Function>(&h.save)))
+                .collect()
+        };
+        let mut saved = HashMap::new();
+        for (name, func) in funcs {
+            let func = match func {
+                Ok(func) => func,
+                Err(err) => {
+                    warn!("Lua on_reload({name:?}) registry error: {err}");
+                    continue;
+                }
+            };
+            match func.call::<Value>(()) {
+                Ok(Value::Nil) => {}
+                Ok(value) => match self.lua.from_value::<serde_json::Value>(value) {
+                    Ok(json) => {
+                        saved.insert(name, json);
+                    }
+                    Err(err) => warn!(
+                        "on_reload({name:?}) save: value not JSON-compatible \
+                         (persist ids, not window handles): {err}"
+                    ),
+                },
+                Err(err) => warn!("Lua on_reload({name:?}) save error: {err}"),
+            }
+        }
+        saved
+    }
+
+    /// Deliver saved state to this (fresh) VM's matching restore hooks.
+    /// Returns how many hooks were invoked — zero means the caller should
+    /// fall back to the on_window_open replay.
+    pub fn restore_reload_state(&mut self, saved: &HashMap<String, serde_json::Value>) -> usize {
+        let mut ran = 0;
+        for (name, value) in saved {
+            let func = {
+                let hooks = self.shared.reload_hooks.borrow();
+                let Some(h) = hooks.get(name) else { continue };
+                match self.lua.registry_value::<Function>(&h.restore) {
+                    Ok(func) => func,
+                    Err(err) => {
+                        warn!("Lua on_reload({name:?}) registry error: {err}");
+                        continue;
+                    }
+                }
+            };
+            let value = match self.lua.to_value(value) {
+                Ok(value) => value,
+                Err(err) => {
+                    warn!("on_reload({name:?}) restore: conversion error: {err}");
+                    continue;
+                }
+            };
+            // Count the attempt even on error: the hook may have mutated
+            // state partway, so replaying on top could double-track windows.
+            ran += 1;
+            if let Err(err) = func.call::<()>(value) {
+                warn!("Lua on_reload({name:?}) restore error: {err}");
+            }
+        }
+        ran
     }
 
     /// Test-only access for docgen's API-parity checks.
@@ -2009,6 +2125,60 @@ mod tests {
         assert_eq!(broadcasts[0].1, serde_json::json!({ "name": "2" }));
         assert_eq!(broadcasts[1].1, serde_json::Value::Null);
         assert!(rt.take_ipc_broadcasts().is_empty());
+    }
+
+    /// State saved from one VM's `tomoe.on_reload` save hooks crosses into
+    /// a fresh VM's restore hooks (the reload path), keyed by name; unmatched
+    /// keys deliver nothing and mismatched configs fall back to replay (0).
+    #[test]
+    fn reload_state_round_trip() {
+        let mut old = LuaRuntime::new().unwrap();
+        old.lua
+            .load(
+                r#"
+                tomoe.on_reload("wm", function()
+                  return { active = 3, ids = { 10, 20 } }
+                end, function() end)
+                tomoe.on_reload("gone", function() return { x = 1 } end, function() end)
+                tomoe.on_reload("nothing", function() return nil end, function() end)
+                "#,
+            )
+            .exec()
+            .unwrap();
+        let saved = old.save_reload_state();
+        assert_eq!(saved.len(), 2, "nil saves are dropped");
+        assert_eq!(
+            saved["wm"],
+            serde_json::json!({ "active": 3, "ids": [10, 20] })
+        );
+
+        let mut new = LuaRuntime::new().unwrap();
+        new.lua
+            .load(
+                r#"
+                restored = nil
+                tomoe.on_reload("wm", function() end, function(state)
+                  restored = state
+                end)
+                "#,
+            )
+            .exec()
+            .unwrap();
+        assert_eq!(
+            new.restore_reload_state(&saved),
+            1,
+            "only matching keys run"
+        );
+        let (active, first_id): (i64, i64) = new
+            .lua
+            .load("return restored.active, restored.ids[1]")
+            .eval()
+            .unwrap();
+        assert_eq!((active, first_id), (3, 10));
+
+        // A config with no on_reload restores nothing — the replay fallback.
+        let mut plain = LuaRuntime::new().unwrap();
+        assert_eq!(plain.restore_reload_state(&saved), 0);
     }
 
     #[test]

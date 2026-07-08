@@ -733,9 +733,10 @@ impl Tomoe {
                 let Some(layer) = map.layer_for_surface(&root, WindowSurfaceType::TOPLEVEL) else {
                     continue;
                 };
-                let (Some(layer_geo), Some(output_geo)) =
-                    (map.layer_geometry(layer), self.space.output_geometry(output))
-                else {
+                let (Some(layer_geo), Some(output_geo)) = (
+                    map.layer_geometry(layer),
+                    self.space.output_geometry(output),
+                ) else {
                     continue;
                 };
                 let mut rect =

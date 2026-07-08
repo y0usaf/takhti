@@ -251,4 +251,57 @@ tomoe.on_outputs_changed(function()
   M.arrange()
 end)
 
+-- Survive config reloads: persist workspace assignments as window ids (the
+-- only thing that outlives the config VM) and rebuild the tables from them,
+-- instead of letting the core replay every window into the active workspace.
+tomoe.on_reload("wm", function()
+  local ws = {}
+  for i = 1, M.workspace_count do
+    local ids = {}
+    for _, win in ipairs(M.workspaces[i]) do
+      ids[#ids + 1] = win:id()
+    end
+    ws[i] = ids
+  end
+  local full = {}
+  for id in pairs(M.fullscreen) do
+    full[#full + 1] = id
+  end
+  return { active = M.active, workspaces = ws, fullscreen = full }
+end, function(state)
+  local seen = {}
+  for i = 1, M.workspace_count do
+    M.workspaces[i] = {}
+    for _, id in ipairs(state.workspaces and state.workspaces[i] or {}) do
+      local win = tomoe.window(id)
+      if win then
+        table.insert(M.workspaces[i], win)
+        seen[id] = true
+      end
+    end
+  end
+  M.active = math.max(1, math.min(state.active or 1, M.workspace_count))
+  M.fullscreen = {}
+  for _, id in ipairs(state.fullscreen or {}) do
+    if seen[id] then
+      M.fullscreen[id] = true
+    end
+  end
+  -- Windows the old config didn't track (it wasn't wm, or their workspace
+  -- fell beyond a reduced workspace_count) join the active workspace.
+  for _, win in ipairs(tomoe.windows()) do
+    if not seen[win:id()] then
+      table.insert(M.workspaces[M.active], win)
+    end
+  end
+  for i = 1, M.workspace_count do
+    if i ~= M.active then
+      for _, win in ipairs(M.workspaces[i]) do
+        win:hide()
+      end
+    end
+  end
+  M.arrange()
+end)
+
 return M

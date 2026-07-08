@@ -20,6 +20,7 @@ and type checking in your editor.
 
 ## Windows
 - `tomoe.windows() -> Window[]` — All windows (mapped and unmapped), ordered by id (creation order).
+- `tomoe.window(id) -> Window?` — Look up a window by its stable id (e.g. ids persisted through tomoe.on_reload); nil if it no longer exists.
 - `tomoe.focused_window() -> Window?` — The keyboard-focused window, if any.
 
 ### Window
@@ -62,6 +63,7 @@ A toplevel window. Reads reflect the snapshot taken before this Lua entry; write
 - `tomoe.on_pointer_leave(fn)` — Run `fn` when the pointer leaves a window.
 - `tomoe.grab_pointer(on_motion, on_release)` — Route pointer motion to `on_motion` (world coordinates) instead of clients until every button is released, then call `on_release`. Typically started from an on_pointer_button hook that returned true to consume the click.
 - `tomoe.ungrab_pointer()` — End the active grab without running its release callback.
+- `tomoe.on_reload(name, save, restore)` — Persist config state across reloads. `save` runs in the outgoing config just before the new one takes over and must return a JSON-compatible value (window handles don't survive — persist ids and look them back up with tomoe.window); `restore` runs in the new config with that value after it loads. Keyed by `name` so independent modules persist independently. When any restore hook runs, the core skips the on_window_open replay of existing windows — restored state supersedes it.
 
 ## Processes
 
