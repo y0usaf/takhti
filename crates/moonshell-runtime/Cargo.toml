@@ -11,4 +11,5 @@ calloop.workspace = true
 mlua.workspace = true
 moonshell-render.workspace = true
 moonshell-surface.workspace = true
+moonshell-services.workspace = true
 tracing.workspace = true

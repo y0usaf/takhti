@@ -170,6 +170,9 @@ struct Engine {
     loop_handle: LoopHandle<'static, Shell>,
     /// A debounce timer is already armed.
     reload_scheduled: bool,
+    /// Latest compositor snapshot — kept so a reload's fresh VM gets
+    /// re-seeded (facades reset to placeholders on VM swap).
+    compositor: Option<moonshell_services::compositor::CompositorState>,
 }
 
 impl Engine {
@@ -223,6 +226,20 @@ impl Engine {
         }
     }
 
+    /// Push the stored compositor snapshot into the current VM's
+    /// `shell.services.compositor` facade. Failure is debug-logged —
+    /// a broken/mid-reload VM just misses one snapshot; the next
+    /// change (or the reload's re-seed) retries.
+    fn push_compositor(&self) {
+        if let Some(state) = &self.compositor {
+            if let Err(e) =
+                moonshell_runtime::services_bridge::push_compositor(self.vm.lua(), state)
+            {
+                tracing::debug!("pushing compositor state: {e}");
+            }
+        }
+    }
+
     /// Tear down the current config and re-exec it in a fresh VM. The
     /// windows go first (their painters hold the old VM's last strong
     /// `Lua` clones), then the ctx forgets the old VM's callbacks, then
@@ -249,6 +266,10 @@ impl Engine {
             }
         }
         self.ctx.set_displays(shell.displays());
+        // Re-seed the fresh VM's facades before the config runs, so
+        // top-level service reads see real state (same contract as
+        // displays above).
+        self.push_compositor();
         match std::fs::read_to_string(&self.config) {
             Ok(code) => {
                 if let Err(e) = self.vm.exec(&code, &self.config.to_string_lossy()) {
@@ -362,7 +383,31 @@ fn main() -> anyhow::Result<()> {
         watcher,
         loop_handle: event_loop.handle(),
         reload_scheduled: false,
+        compositor: None,
     }));
+
+    // The compositor service (M3 §1): a native IPC backend pushes
+    // workspace/focus snapshots; the engine stores each one and
+    // forwards it into `shell.services.compositor`. The Lua side runs
+    // while Engine is borrowed — fine, service subscribers only touch
+    // ShellCtx (the action-queue discipline), never Engine.
+    {
+        let eng = engine.clone();
+        match moonshell_services::compositor::start(
+            &event_loop.handle(),
+            move |_shell: &mut Shell, state| {
+                let mut e = eng.borrow_mut();
+                e.compositor = Some(state.clone());
+                e.push_compositor();
+            },
+        ) {
+            Ok(Some(c)) => tracing::info!("compositor backend: {c}"),
+            Ok(None) => {
+                tracing::info!("no compositor IPC detected — workspace tracking disabled")
+            }
+            Err(e) => tracing::warn!("compositor service unavailable: {e}"),
+        }
+    }
 
     // Inotify readiness: drain events (fires watch_file callbacks
     // inline), then debounce config changes into one reload request —

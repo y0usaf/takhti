@@ -27,7 +27,7 @@ the M1 breakdown below. Measured on the fixture: **14.5 MB RSS
 (release) with a full bar tree, 0 voluntary ctx switches over 5 s
 idle** — under the 25 MB full-bar budget with room for the Lua VM.
 
-**M2 in progress**: §1 done (2026-07-08) — `runtime` crate boots a
+**M2 done**: §1 done (2026-07-08) — `runtime` crate boots a
 vendored-LuaJIT VM, loads the ported `ui.*` stdlib from
 `lua/moonshell/stdlib.lua`, and parses nur's element-table contract
 into `render::Element`. §2 done (2026-07-08) — `surface` is
@@ -57,8 +57,19 @@ fixture; CI test `nur_simple_bar_runs_unmodified`). Live on tomoe:
 **17.4 MB RSS (release) with the full bar + 1 Hz clock (budget 25 MB);
 wakeups only from the live timer (≈3 ctx switches per tick, zero
 otherwise); live edit → reload verified, RSS stable across reloads**.
-Next open item: **M3 — services, natively** (start with the tomoe
-compositor backend + `$TOMOE_SOCKET`, per the interconnection tracker).
+
+**M3 in progress**: §1 done (2026-07-08) — `services` crate (native,
+event-driven, Lua-free), compositor service with the **tomoe backend**:
+`tomoe-ipc` consumed as a git dep (the first external consumer —
+doctrine 03 landed), nonblocking socket as a calloop `Generic`, tomoe's
+`wm.lua` grew the `wm_state` workspace vocabulary (served + broadcast;
+zero wire change), snapshots bridged into `shell.services.compositor`.
+Verified live + on a nested tomoe: workspace switches, window counts,
+focus titles, disconnect/reconnect, hot-reload re-seed. **7.7 MB RSS
+(release, full test bar, connected), 0 voluntary ctx switches / 5 s
+idle.** Next open item: **M3 §2 — niri/Hyprland/Sway compositor
+backends** (port nur's logic onto event sockets; the workspaces widget
+must live-update on niri for the M3 accept).
 
 Two working inputs exist:
 
@@ -90,13 +101,14 @@ Two working inputs exist:
       (need the tray service / more surface — M3/M4)
 - [ ] Services: applications (.desktop scan + inotify), battery,
       audio, network, bluetooth, mpris, notifications daemon,
-      power-profiles, sysinfo, system tray (SNI), compositor
-      auto-detect (M3) — **re-implemented event-driven** (zbus/sysfs),
+      power-profiles, sysinfo, system tray (SNI) (M3) —
+      **re-implemented event-driven** (zbus/sysfs),
       not ported: nur's CLI-polling backends (`wpctl`, `nmcli`,
       `playerctl`, `bluetoothctl`, `powerprofilesctl`) are the memory/
-      wakeup cost we're eliminating
-- [ ] Compositor backends: Hyprland, niri, Sway (port), **tomoe (new)**
-      (M3)
+      wakeup cost we're eliminating. Compositor auto-detect done
+      (M3 §1; tomoe > Hyprland > niri > Sway)
+- [ ] Compositor backends: Hyprland, niri, Sway (port) (M3 §2);
+      **tomoe done** (M3 §1)
 - [ ] nix: home-manager module + `mkBar`-style lib helpers (post-M3,
       composed with tomoe's module)
 
@@ -128,13 +140,17 @@ Two working inputs exist:
 
 ## Interconnection tracker (mirrored in tomoe PLAN.md)
 
-- [ ] M3: tomoe compositor backend — `$TOMOE_SOCKET` discovery via
-      `tomoe-ipc` git dep, `subscribe` stream (`window_open/close`,
-      `focus_change`, `outputs_changed`), workspace state from
-      `wm.lua`'s `tomoe.ipc.broadcast` events. What the workspace
-      vocabulary should be is designed *with* tomoe (its PLAN.md
-      "moonshell-driven" section) — first real test of doctrine 03's
-      wire/vocabulary split.
+- [x] M3 §1: tomoe compositor backend landed 2026-07-08 —
+      `$TOMOE_SOCKET`/derived-path discovery via the `tomoe-ipc` git
+      dep (pinned rev in Cargo.toml; fetch hash in flake
+      `cargoLock.outputHashes`), `subscribe` stream (`window_open/
+      close`, `focus_change`, `wm_state`). The workspace vocabulary is
+      **`wm_state`** — `{ active, workspaces = { { id, windows },
+      … } }` — served *and* broadcast by tomoe's `wm.lua` (its commit
+      45aea74): policy rides the user event vocabulary, the wire crate
+      stayed frozen — doctrine 03's split held on first contact. Known
+      gap (tracked in tomoe PLAN.md): no core event for title changes
+      after window_open, so a focused title can go stale.
 - [x] M2: shared Lua conventions doc landed 2026-07-08 as
       `~/Dev/design/conventions/lua.md` (API global, settings tables,
       module shape, `on_*` naming, `Mod`, the reload contract) — tomoe
@@ -220,6 +236,52 @@ M1 breakdown (element vocabulary; all in `render`, no Lua):
    `max_w` clip, fallback now fits the box (regression test
    `icon_fallback_text_clips_to_box`). Measured: 14.5 MB RSS release,
    0 voluntary ctx switches / 5 s.
+
+M3 breakdown (services, natively):
+
+1. [x] compositor service + tomoe backend (2026-07-08).
+   `crates/services`: Lua-free, doctrine-05 shape — one plain state
+   struct + one `start(handle, notify)` per service; backends are
+   calloop sources, never threads. `compositor::detect()`: tomoe
+   (`$TOMOE_SOCKET`, else `tomoe_ipc::find_socket()` path exists) >
+   Hyprland > niri > Sway (nur's precedence); non-tomoe backends warn
+   until §2. tomoe backend (`compositor/tomoe.rs`): `subscribe` sent
+   *first*, then `windows` + `wm_state` snapshot requests — racing
+   events apply on top, never lost; nonblocking `UnixStream` as a
+   calloop `Generic`; pure `Model` (frames in → state out) unit-tested
+   apart from the wiring; disconnect resets to `connected = false`,
+   notifies, arms a 2 s retry timer (the only periodic wakeup, only
+   while disconnected — and only for IPC-socket loss; losing the
+   *Wayland* compositor kills the bar with it, correctly). Bridge:
+   `runtime::services_bridge::push_compositor` — the one place service
+   state crosses into Lua — calls `shell.services.compositor:set(snap)`
+   so widgets ride the ordinary `shell.state` path; the binary's
+   notify closure stores the snapshot on `Engine` and re-seeds each
+   fresh VM *before* config exec (same contract as displays).
+   Snapshot adds `connected` + per-workspace `windows` count to nur's
+   shape; workspaces widget now highlights active (theme accent) and
+   defaults to occupied-only (`show_empty` opts it out). Read path
+   only — service *actions* (focus_workspace) stay placeholder until
+   the write path lands with M4 clicks. tomoe side: `wm.lua` serves +
+   broadcasts `wm_state` (vocabulary above). Verified: live session
+   (degraded path: no `wm_state` → warn once, core events still track
+   focus titles) and nested tomoe (workspace switch/move, counts,
+   disconnect → reconnect, hot-reload re-seed). Measured: 7.7 MB RSS
+   release, 0 voluntary ctx switches / 5 s idle while connected.
+2. [ ] niri, Hyprland, Sway backends — port nur's logic onto event
+   sockets (niri event stream, Hyprland socket2, sway subscribe), no
+   polling; workspaces widget must live-update on niri (M3 accept).
+3. [ ] battery: UPower over zbus, sysfs + inotify fallback; replaces
+   the placeholder facade through the same `:set()` path.
+4. [ ] network (NetworkManager zbus) + mpris (zbus, playerctld-style
+   player tracking).
+5. [ ] audio — decide the native path (PipeWire native protocol vs
+   wireplumber): zero steady-state subprocesses is the constraint.
+6. [ ] notifications daemon + SNI tray + power-profiles (zbus,
+   org.freedesktop.Notifications / StatusNotifier); system_tray +
+   bar_overlay widgets become portable.
+7. [ ] acceptance + wind-down decision: widget parity vs nur, both-
+   compositor live test, execsnoop-clean 5 min, RSS ≤ 25 MB full bar.
 
 M2 breakdown (the Lua runtime):
 
@@ -430,6 +492,18 @@ tiny before the runtime landed on top.
   loop reordered (tick before dispatch), `shell.displays` needed
   roundtrips inside `Shell::connect`; audit new `shell.*` calls for
   the "top-level call, no loop yet" case
+- From M3 §1: `pkill -f` self-matching, part two — it's not enough to
+  bracket the pattern (`[t]omoe`): if the *same* bash -c command also
+  launches the target, the raw launch string sits in the shell's own
+  cmdline and pkill kills the invoking shell mid-script (observed as
+  silent no-output tool calls). Keep launch and kill in separate
+  commands, or launch through a helper script
+- From M3 §1: calloop's `NoIoDrop<T>` has no `DerefMut` — read Unix
+  sockets in `Generic` callbacks through `Read for &UnixStream`
+  (`(&**stream).read(…)`)
+- From M3 §1: a git dep needs its fetch hash in **both** flake spots
+  (`cargoLock.outputHashes` for buildRustPackage *and* the clippy
+  check's `importCargoLock`) — factor one `cargoLock` attrset
 - From M2 §5: never inotify-watch a file directly — editors save by
   rename-replace and the watch dies with the old inode; watch the
   parent dir and match events by canonicalized full path

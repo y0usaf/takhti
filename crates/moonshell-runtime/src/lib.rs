@@ -18,6 +18,7 @@ pub mod api;
 pub mod element;
 pub mod exec;
 pub mod painter;
+pub mod services_bridge;
 pub mod state;
 pub mod timer;
 pub mod watch;

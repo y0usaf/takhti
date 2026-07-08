@@ -11,12 +11,16 @@
 --   :subscribe(fn)    → fn() after every :set (no args, nur's contract)
 -- plus one method per action name.
 --
--- M2 status: these are *placeholders* — static initial state, actions
--- warn once and do nothing. They exist so nur configs (which read
--- shell.services.* unconditionally) run unmodified before M3. M3
--- replaces the backing only: native event-driven backends (zbus /
--- sysfs / compositor IPC) push snapshots into the same facades via
--- :set() and register real actions; the Lua-facing shape is final.
+-- M3 status: `compositor` is live — the native backend (crates/
+-- services, tomoe IPC; niri/Hyprland/Sway in M3 §2) pushes snapshots
+-- through this facade's :set() from the binary. The rest are still
+-- *placeholders* — static initial state, actions warn once and do
+-- nothing — so nur configs (which read shell.services.*
+-- unconditionally) run unmodified. Later M3 sections replace each
+-- backing the same way; the Lua-facing shape is final. Actions
+-- (focus_workspace, set_volume, …) become real once the write path
+-- lands (queued service actions — with M4 interactivity, when
+-- something can click them).
 
 local M = {}
 
@@ -60,7 +64,14 @@ M.define("sysinfo", {
     memory_percent = 0,
 })
 
+-- Backed natively since M3 §1. Snapshot shape (nur's, plus `connected`):
+--   connected        boolean — IPC up (false: compositor gone/undetected)
+--   active_workspace integer
+--   workspaces       { { id, name, active, windows }, ... } — all of them;
+--                    which to display is the widget's policy
+--   active_window    string? — focused window title
 M.define("compositor", {
+    connected        = false,
     active_workspace = 1,
     workspaces       = {},
     active_window    = nil,

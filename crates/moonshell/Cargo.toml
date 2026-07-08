@@ -17,3 +17,4 @@ tracing-subscriber.workspace = true
 moonshell-surface.workspace = true
 moonshell-render.workspace = true
 moonshell-runtime.workspace = true
+moonshell-services.workspace = true

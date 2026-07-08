@@ -1,0 +1,12 @@
+[package]
+name = "moonshell-services"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+calloop.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tomoe-ipc.workspace = true
+tracing.workspace = true

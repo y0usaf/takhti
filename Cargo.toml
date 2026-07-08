@@ -1,5 +1,11 @@
 [workspace]
-members = ["crates/moonshell", "crates/surface", "crates/render", "crates/runtime"]
+members = [
+    "crates/moonshell",
+    "crates/surface",
+    "crates/render",
+    "crates/runtime",
+    "crates/services",
+]
 resolver = "2"
 
 [workspace.package]
@@ -26,12 +32,18 @@ mlua = { version = "0.10", features = ["luajit", "vendored"] }
 # default features off: no tokio/futures "stream" machinery — the fd is
 # a calloop Generic source.
 inotify = { version = "0.11", default-features = false }
+serde_json = "1.0"
+# The tomoe wire contract, pulled over git (doctrine 03: repo separation
+# keeps the versioned wire the only channel between the pair). Pin = a
+# plain rev, bumped deliberately when the protocol grows.
+tomoe-ipc = { git = "https://github.com/y0usaf/tomoe", rev = "8862c257d8a37a66079ffe1e18d1bfcd2e16ff72" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 moonshell-surface = { path = "crates/surface" }
 moonshell-render = { path = "crates/render" }
 moonshell-runtime = { path = "crates/runtime" }
+moonshell-services = { path = "crates/services" }
 
 [profile.release]
 opt-level = 3

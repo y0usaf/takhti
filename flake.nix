@@ -11,6 +11,16 @@
       forAllSystems = lib.genAttrs systems;
       nixpkgsFor = forAllSystems (system: nixpkgs.legacyPackages.${system});
 
+      # Git dependencies (Cargo.lock sources without a registry checksum)
+      # need their fetch hash pinned for importCargoLock. tomoe-ipc is
+      # the doctrine-03 wire contract, deliberately consumed over git.
+      cargoLock = {
+        lockFile = ./Cargo.lock;
+        outputHashes = {
+          "tomoe-ipc-0.1.0" = "sha256-OMDiOpRuwPTvM10MneBDh70+hqrAnVMwuoJRlQZLrr4=";
+        };
+      };
+
       moonshell-package =
         { lib, rustPlatform }:
         rustPlatform.buildRustPackage {
@@ -28,7 +38,7 @@
             ];
           };
 
-          cargoLock.lockFile = ./Cargo.lock;
+          inherit cargoLock;
 
           strictDeps = true;
 
@@ -109,7 +119,7 @@
               pkgs.rustc
               pkgs.clippy
             ];
-            cargoDeps = pkgs.rustPlatform.importCargoLock { lockFile = ./Cargo.lock; };
+            cargoDeps = pkgs.rustPlatform.importCargoLock cargoLock;
             buildPhase = ''
               export HOME=$TMPDIR
               cargo clippy --workspace --all-targets -- -D warnings
