@@ -9,7 +9,16 @@
 //!
 //! Everything is generic over [`TomoeRenderer`] so the same scene code
 //! drives the winit backend's `GlesRenderer` and the TTY backend's
-//! multi-GPU `MultiRenderer`.
+//! multi-GPU `MultiRenderer`. Shader elements (rounded corners) draw
+//! through the underlying Gles context ([`renderer::AsGlesRenderer`]), so
+//! `OutputRenderElements` implements `RenderElement` for exactly those two
+//! renderers (see `macros.rs`) instead of generically.
+
+pub mod clipped_surface;
+pub mod damage;
+mod macros;
+pub mod renderer;
+pub mod shaders;
 
 use std::collections::HashMap;
 
@@ -25,11 +34,11 @@ use smithay::desktop::utils::{
     surface_presentation_feedback_flags_from_states, take_presentation_feedback_surface_tree,
     OutputPresentationFeedback,
 };
-use smithay::desktop::{layer_map_for_output, Window};
+use smithay::desktop::{layer_map_for_output, PopupManager, Window, WindowSurface};
 use smithay::input::pointer::{CursorImageStatus, CursorImageSurfaceData};
 use smithay::output::Output;
-use smithay::render_elements;
-use smithay::utils::{IsAlive, Physical, Point, Scale};
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
+use smithay::utils::{IsAlive, Physical, Point, Rectangle, Scale};
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::session_lock::LockSurface;
 use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
@@ -37,34 +46,45 @@ use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
 use crate::coords;
 use crate::cursor::Cursor;
 use crate::space::PhysicalSpace;
+use clipped_surface::ClippedSurfaceRenderElement;
+use damage::ExtraDamage;
+use renderer::AsGlesRenderer;
+use shaders::Shaders;
 
 /// Renderer bounds for tomoe's render elements, satisfied by both
 /// `GlesRenderer` (winit) and `MultiRenderer` (TTY). The associated type
 /// pins `TextureId`, since associated type bounds can't be written in a
-/// supertrait list directly.
+/// supertrait list directly. `AsGlesRenderer` reaches the Gles context
+/// shader elements draw through.
 pub trait TomoeRenderer:
-    ImportAll + ImportMem + Renderer<TextureId = Self::TomoeTextureId>
+    ImportAll + ImportMem + Renderer<TextureId = Self::TomoeTextureId> + AsGlesRenderer
 {
     type TomoeTextureId: Texture + Clone + Send + 'static;
 }
 
 impl<R> TomoeRenderer for R
 where
-    R: ImportAll + ImportMem,
+    R: ImportAll + ImportMem + AsGlesRenderer,
     R::TextureId: Texture + Clone + Send + 'static,
 {
     type TomoeTextureId = R::TextureId;
 }
 
-render_elements! {
-    pub OutputRenderElements<R> where R: ImportAll + ImportMem;
-    Solid=SolidColorRenderElement,
-    Memory=MemoryRenderBufferRenderElement<R>,
-    Surface=WaylandSurfaceRenderElement<R>,
-    // Camera-zoomed variants (view_zoom != 1 only): window content and
-    // border slabs scaled around the view origin.
-    ZoomedSurface=RescaleRenderElement<WaylandSurfaceRenderElement<R>>,
-    ZoomedSolid=RescaleRenderElement<SolidColorRenderElement>,
+crate::tomoe_render_elements! {
+    OutputRenderElements<R> => {
+        Solid = SolidColorRenderElement,
+        Memory = MemoryRenderBufferRenderElement<R>,
+        Surface = WaylandSurfaceRenderElement<R>,
+        // Window content clipped to rounded-corner geometry.
+        ClippedSurface = ClippedSurfaceRenderElement<R>,
+        // Damage injection for uniform-driven effects (corner radius).
+        Damage = ExtraDamage,
+        // Camera-zoomed variants (view_zoom != 1 only): window content and
+        // border slabs scaled around the view origin.
+        ZoomedSurface = RescaleRenderElement<WaylandSurfaceRenderElement<R>>,
+        ZoomedClippedSurface = RescaleRenderElement<ClippedSurfaceRenderElement<R>>,
+        ZoomedSolid = RescaleRenderElement<SolidColorRenderElement>,
+    }
 }
 
 /// Collect wp-presentation feedback for everything rendered on `output`.
@@ -215,15 +235,36 @@ pub fn cursor_elements<R: TomoeRenderer>(
     elements
 }
 
+/// Committed fullscreen state (same check as the TTY tearing candidate).
+fn is_fullscreen(window: &Window) -> bool {
+    window.toplevel().is_some_and(|toplevel| {
+        toplevel.with_committed_state(|state| {
+            state
+                .map(|s| s.states.contains(xdg_toplevel::State::Fullscreen))
+                .unwrap_or(false)
+        })
+    })
+}
+
 /// Build the full scene for one output (everything except the cursor), in
 /// render order: earlier elements draw on top. `ui` and `borders` are built
 /// by the caller because they need parts of `Tomoe` this borrow can't reach.
+///
+/// `corner_radius` > 0 rounds window corners: the toplevel surface tree
+/// draws through the clipped-surface shader (popups never clip). Fullscreen
+/// windows are exempt — nothing to round, and clipping would block direct
+/// scanout. `corner_damage` holds the per-window damage-injection elements
+/// bumped when the radius setting changes (`Tomoe::refresh_borders`).
+// Window keys hash by their stable id despite interior mutability.
+#[allow(clippy::mutable_key_type)]
 pub fn scene_elements<R: TomoeRenderer>(
     renderer: &mut R,
     space: &PhysicalSpace,
     output: &Output,
     ui: Vec<OutputRenderElements<R>>,
     borders: Vec<OutputRenderElements<R>>,
+    corner_radius: i32,
+    corner_damage: &HashMap<Window, ExtraDamage>,
 ) -> Vec<OutputRenderElements<R>> {
     let scale = space.scale();
     let render_scale = Scale::from(scale);
@@ -250,6 +291,15 @@ pub fn scene_elements<R: TomoeRenderer>(
     let mut elements = ui;
     elements.extend(layer_elements(renderer, [WlrLayer::Overlay, WlrLayer::Top]));
 
+    // Rounded corners: the shader program lives on the Gles context; its
+    // absence (compile failure, missing init) simply disables rounding.
+    let radius = corner_radius.max(0) as f32;
+    let clip_program = if radius > 0. {
+        Shaders::get(renderer).and_then(|s| s.clipped_surface.clone())
+    } else {
+        None
+    };
+
     // Windows top → bottom. The stored location is the geometry origin; the
     // buffer origin shifts by the client's (logical) geometry offset, rounded
     // once onto the grid. Windows live in world space: the camera pans them
@@ -257,6 +307,7 @@ pub fn scene_elements<R: TomoeRenderer>(
     // them around the view origin via RescaleRenderElement.
     let zoom = space.view_zoom();
     let cam_loc = output_geo.loc + space.view_offset();
+    let origin = Point::from((-output_geo.loc.x, -output_geo.loc.y));
     for window in space.elements().rev() {
         let Some(geo) = space.element_geometry(window) else {
             continue;
@@ -271,30 +322,101 @@ pub fn scene_elements<R: TomoeRenderer>(
         let buffer_offset =
             coords::logical_point_to_physical(window.geometry().loc.to_f64(), scale);
         let loc = geo.loc - buffer_offset - cam_loc;
-        if zoom == 1.0 {
-            elements.extend(window.render_elements::<OutputRenderElements<R>>(
+
+        let WindowSurface::Wayland(toplevel) = window.underlying_surface();
+        let surface = toplevel.wl_surface();
+
+        // Popups draw above the window and never clip (they overhang the
+        // geometry by design). Same order and offset math as smithay's
+        // `Window::render_elements`, which can't express per-tree clipping.
+        for (popup, popup_offset) in PopupManager::popups_for_surface(surface) {
+            let offset = coords::logical_point_to_physical(
+                (window.geometry().loc + popup_offset - popup.geometry().loc).to_f64(),
+                scale,
+            );
+            for element in render_elements_from_surface_tree(
                 renderer,
-                loc,
+                popup.wl_surface(),
+                loc + offset,
                 render_scale,
                 1.0,
-            ));
+                Kind::Unspecified,
+            ) {
+                elements.push(if zoom == 1.0 {
+                    OutputRenderElements::Surface(element)
+                } else {
+                    OutputRenderElements::ZoomedSurface(RescaleRenderElement::from_element(
+                        element, origin, zoom,
+                    ))
+                });
+            }
+        }
+
+        let program = if is_fullscreen(window) {
+            None
         } else {
-            let origin = Point::from((-output_geo.loc.x, -output_geo.loc.y));
-            elements.extend(
-                window
-                    .render_elements::<WaylandSurfaceRenderElement<R>>(
-                        renderer,
-                        loc,
+            clip_program.clone()
+        };
+        // The clip rect is the window geometry in output-local physical
+        // pixels — the same space the elements are positioned in.
+        let clip_geo = Rectangle::new(geo.loc - cam_loc, geo.size);
+
+        for element in render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<R>>(
+            renderer,
+            surface,
+            loc,
+            render_scale,
+            1.0,
+            Kind::Unspecified,
+        ) {
+            match &program {
+                Some(program)
+                    if ClippedSurfaceRenderElement::will_clip(
+                        &element,
                         render_scale,
-                        1.0,
-                    )
-                    .into_iter()
-                    .map(|element| {
+                        clip_geo,
+                        radius,
+                    ) =>
+                {
+                    let clipped = ClippedSurfaceRenderElement::new(
+                        element,
+                        render_scale,
+                        clip_geo,
+                        program.clone(),
+                        radius,
+                    );
+                    elements.push(if zoom == 1.0 {
+                        OutputRenderElements::ClippedSurface(clipped)
+                    } else {
+                        OutputRenderElements::ZoomedClippedSurface(
+                            RescaleRenderElement::from_element(clipped, origin, zoom),
+                        )
+                    });
+                }
+                _ => {
+                    elements.push(if zoom == 1.0 {
+                        OutputRenderElements::Surface(element)
+                    } else {
                         OutputRenderElements::ZoomedSurface(RescaleRenderElement::from_element(
                             element, origin, zoom,
                         ))
-                    }),
-            );
+                    });
+                }
+            }
+        }
+
+        // Radius changes bump this window's ExtraDamage (uniform changes
+        // don't touch any commit counter the tracker could see).
+        if program.is_some() {
+            if let Some(damage) = corner_damage.get(window) {
+                let rect = if zoom == 1.0 {
+                    clip_geo
+                } else {
+                    let screen = space.world_rect_to_screen(geo);
+                    Rectangle::new(screen.loc - output_geo.loc.to_f64(), screen.size).to_i32_up()
+                };
+                elements.push(OutputRenderElements::Damage(damage.render(rect)));
+            }
         }
     }
 

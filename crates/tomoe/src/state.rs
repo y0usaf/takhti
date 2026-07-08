@@ -111,6 +111,12 @@ pub struct Tomoe {
     /// Four slabs per window (top, bottom, left, right) so transparent
     /// windows don't show border color through their whole surface.
     pub border_buffers: HashMap<Window, [SolidColorBuffer; 4]>,
+    /// Per-window damage injection for rounded corners: the radius is a
+    /// shader uniform, invisible to damage tracking, so radius changes bump
+    /// these (stable element ids, like the border buffers).
+    pub corner_damage: HashMap<Window, crate::render::damage::ExtraDamage>,
+    /// The corner radius `corner_damage` was last bumped for.
+    pub applied_corner_radius: i32,
     pub cursor: Cursor,
 
     pub compositor_state: CompositorState,
@@ -353,6 +359,8 @@ impl Tomoe {
             consumed_buttons: std::collections::HashSet::new(),
             hovered_window: None,
             border_buffers: HashMap::new(),
+            corner_damage: HashMap::new(),
+            applied_corner_radius: 0,
             cursor: Cursor::load(),
             compositor_state,
             layer_shell_state,
@@ -1058,6 +1066,7 @@ impl Tomoe {
             .find(|(_, w)| *w == window)
             .map(|(id, _)| *id);
         self.border_buffers.remove(window);
+        self.corner_damage.remove(window);
         self.space.unmap(window);
         let Some(id) = id else { return };
         self.windows.remove(&id);

@@ -86,6 +86,9 @@ tomoe.settings {
     width = 2,
     focused = "#7aa2f7",
     unfocused = "#3b4261",
+    -- Window corner radius in physical pixels (0 = square). Fullscreen
+    -- windows never round.
+    -- radius = 12,
   },
 }
 

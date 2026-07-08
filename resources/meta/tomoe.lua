@@ -482,6 +482,7 @@ function ScreencastRequest:defer() end
 ---@field width integer # thickness in physical pixels; 1 is one device pixel at any scale (default 2)
 ---@field focused string # "#rrggbb" or "#rrggbbaa"
 ---@field unfocused string # "#rrggbb" or "#rrggbbaa"
+---@field radius integer # window corner radius in physical pixels; 0 disables rounding, fullscreen windows never round (default 0)
 
 ---xkb keymap + key repeat. Empty strings mean the xkb defaults (including
 ---the XKB_DEFAULT_* environment variables).

@@ -42,8 +42,10 @@ pub fn init(tomoe: &mut Tomoe) -> Result<()> {
         .with_inner_size(LogicalSize::new(width as f64, height as f64))
         .with_title("tomoe")
         .with_name("tomoe", "");
-    let (backend, winit_source) =
+    let (mut backend, winit_source) =
         winit::init_from_attributes::<GlesRenderer>(attrs).map_err(|err| anyhow!("{err:?}"))?;
+    // Custom shader programs (rounded corners) compile once per context.
+    crate::render::shaders::init(backend.renderer());
 
     let output = Output::new(
         "winit".to_string(),
@@ -161,6 +163,7 @@ pub fn redraw(tomoe: &mut Tomoe) {
         ui,
         lua,
         border_buffers,
+        corner_damage,
         clock,
         lock_surfaces,
         lock_backdrops,
@@ -195,6 +198,8 @@ pub fn redraw(tomoe: &mut Tomoe) {
             &output,
             ui_elements,
             borders,
+            lua.settings().corner_radius,
+            corner_damage,
         )
     };
 

@@ -211,7 +211,20 @@ Done and working:
       revisit with M6 eye-candy
 - [ ] Animation engine (springs + beziers on layout positions,
       AnimatedVariable-style; open/close/move/workspace-switch)
-- [ ] Rounded corners (shader element, pixel-aligned per doctrine §5)
+- [x] Rounded corners (`settings.border.radius`, physical px) — niri-shape
+      shader infra in `render/`: `shaders.rs` compiles per Gles context
+      (winit init + TTY primary-GPU bring-up), `clipped_surface.rs` wraps
+      the toplevel surface tree in a custom tex program (no offscreen —
+      doctrine §5; popups never clip), `tomoe_render_elements!` macro
+      replaces smithay's (RenderElement for the two concrete renderers,
+      since draw needs the GlesFrame), per-window `ExtraDamage` bumps on
+      radius change (uniforms are invisible to damage tracking).
+      Fullscreen windows never round (keeps direct scanout — clipped
+      elements return no underlying storage). Verified nested: all four
+      corners AA'd, grim/screencopy path included. TTY live check pending.
+      Follow-up: borders stay square — rounded borders need the border
+      shader (with shadows); per-window radius needs the core-props op
+      surface (below)
 - [ ] Drop shadows
 - [ ] Dual-kawase blur (windows + blur-behind for layer surfaces)
 - [ ] Special workspaces / groups — Lua-level per policy split; needs
@@ -642,10 +655,21 @@ works — all landed; live night-light run pending.*
 
 ### M6 — Phase 5: eye-candy
 
-1. Animation engine (springs/beziers) driving layout positions + opacity
-2. Borders polish, rounded corners, shadows as shader elements —
-   pixel-aligned intermediates per coordinate doctrine §5
-3. Dual-kawase blur incl. blur-behind for layer surfaces
+1. ~~Rounded corners~~ done — first slice, built the shader-element
+   infrastructure the rest of M6 rides on (details in the Hyprland gap
+   list above): `render/` now has per-context shader compilation
+   (`shaders.rs`), Gles access through the renderer abstraction
+   (`renderer.rs`: `AsGlesRenderer`/`AsGlesFrame` for GlesRenderer +
+   TtyRenderer), the concrete-renderer element macro
+   (`tomoe_render_elements!`), and damage injection for uniform-driven
+   effects (`damage.rs`). TTY live check pending (verified nested on
+   winit incl. screencopy)
+2. Animation engine (springs/beziers) driving layout positions + opacity
+3. Borders polish (rounded borders via border shader), shadows as shader
+   elements — pixel-aligned intermediates per coordinate doctrine §5;
+   per-window core props (radius/tearing/border colors) queued-op surface
+4. Dual-kawase blur incl. blur-behind for layer surfaces (re-read
+   `ref/ShojiWM/knowledges/effect-invalidation.md` first)
 
 *Accept: side-by-side with Hyprland defaults, no visible fidelity gap;
 UFO test still flat at high refresh with animations running.*

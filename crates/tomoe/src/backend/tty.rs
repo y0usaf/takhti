@@ -36,8 +36,8 @@ use smithay::backend::renderer::element::utils::select_dmabuf_feedback;
 use smithay::backend::renderer::element::RenderElementStates;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::multigpu::gbm::GbmGlesBackend;
-use smithay::backend::renderer::multigpu::{GpuManager, MultiRenderer};
-use smithay::backend::renderer::ImportDma;
+use smithay::backend::renderer::multigpu::{GpuManager, MultiFrame, MultiRenderer};
+use smithay::backend::renderer::{ImportDma, RendererSuper};
 use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::session::{Event as SessionEvent, Session};
 use smithay::backend::udev::{self, UdevBackend, UdevEvent};
@@ -101,6 +101,17 @@ pub type TtyRenderer<'render> = MultiRenderer<
     GbmGlesBackend<GlesRenderer, DrmDeviceFd>,
     GbmGlesBackend<GlesRenderer, DrmDeviceFd>,
 >;
+
+pub type TtyFrame<'render, 'frame, 'buffer> = MultiFrame<
+    'render,
+    'render,
+    'frame,
+    'buffer,
+    GbmGlesBackend<GlesRenderer, DrmDeviceFd>,
+    GbmGlesBackend<GlesRenderer, DrmDeviceFd>,
+>;
+
+pub type TtyRendererError<'render> = <TtyRenderer<'render> as RendererSuper>::Error;
 
 pub type GbmDrmCompositor = DrmCompositor<
     GbmAllocator<DrmDeviceFd>,
@@ -425,7 +436,10 @@ fn device_added(tomoe: &mut Tomoe, node: DrmNode, path: &Path) -> Result<()> {
         // No legacy wl_drm (bind_wl_display): it breaks Xwayland with a fatal
         // "invalid format" protocol error; clients use linux-dmabuf instead.
         match data.gpu_manager.single_renderer(&data.primary_render_node) {
-            Ok(renderer) => {
+            Ok(mut renderer) => {
+                // Rendering always happens on the primary GPU's Gles context;
+                // compile the custom shader programs (rounded corners) on it.
+                crate::render::shaders::init(renderer.as_mut());
                 let formats = renderer.dmabuf_formats();
                 match DmabufFeedbackBuilder::new(data.primary_render_node.dev_id(), formats.clone())
                     .build()
@@ -1499,6 +1513,7 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
         .unwrap_or_default();
     let cursor_status = tomoe.cursor_status.clone();
     let border_width = tomoe.lua.settings().border_width;
+    let corner_radius = tomoe.lua.settings().corner_radius;
     let wait_for_frame_completion = tomoe.lua.settings().wait_for_frame_completion;
 
     let locked = tomoe.is_locked();
@@ -1539,6 +1554,7 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
         cursor_fallback,
         ui,
         border_buffers,
+        corner_damage,
         lock_surfaces,
         lock_backdrops,
         ..
@@ -1615,6 +1631,8 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
             &surface.output,
             ui_elements,
             borders,
+            corner_radius,
+            corner_damage,
         ));
     }
 

@@ -54,6 +54,8 @@ struct SceneParts<'a> {
     ui: &'a mut Ui,
     border_buffers: &'a HashMap<Window, [SolidColorBuffer; 4]>,
     border_width: i32,
+    corner_damage: &'a HashMap<Window, crate::render::damage::ExtraDamage>,
+    corner_radius: i32,
     cursor: &'a crate::cursor::Cursor,
     cursor_status: &'a CursorImageStatus,
     cursor_fallback: &'a SolidColorBuffer,
@@ -121,6 +123,8 @@ impl<'a> SceneParts<'a> {
                 output,
                 ui_elements,
                 borders,
+                self.corner_radius,
+                self.corner_damage,
             ));
         }
 
@@ -198,6 +202,7 @@ macro_rules! split_tomoe {
         // border buffers themselves before borrowing them immutably.
         $tomoe.refresh_borders();
         let border_width = $tomoe.lua.settings().border_width;
+        let corner_radius = $tomoe.lua.settings().corner_radius;
         let pointer_pos = $tomoe
             .seat
             .get_pointer()
@@ -209,6 +214,7 @@ macro_rules! split_tomoe {
             space,
             ui,
             border_buffers,
+            corner_damage,
             cursor,
             cursor_status,
             cursor_fallback,
@@ -225,6 +231,8 @@ macro_rules! split_tomoe {
                 ui,
                 border_buffers,
                 border_width,
+                corner_damage,
+                corner_radius,
                 cursor,
                 cursor_status,
                 cursor_fallback,

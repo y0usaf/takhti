@@ -46,8 +46,10 @@ crate tomoe
 │   │   ├── enum RedrawState: pub
 │   │   ├── struct SurfaceDmabufFeedback: pub
 │   │   ├── struct TtyData: pub
+│   │   ├── type TtyFrame: pub
 │   │   ├── type TtyGpuManager: pub
 │   │   ├── type TtyRenderer: pub
+│   │   ├── type TtyRendererError: pub
 │   │   └── struct TtySurface: pub
 │   └── mod winit: pub
 │       └── struct WinitData: pub
@@ -144,7 +146,17 @@ crate tomoe
 │       └── struct WlrForeignToplevelState: pub
 ├── mod render: pub(crate)
 │   ├── enum OutputRenderElements: pub
-│   └── trait TomoeRenderer: pub
+│   ├── trait TomoeRenderer: pub
+│   ├── mod clipped_surface: pub
+│   │   └── struct ClippedSurfaceRenderElement: pub
+│   ├── mod damage: pub
+│   │   └── struct ExtraDamage: pub
+│   ├── mod macros: pub(self)
+│   ├── mod renderer: pub
+│   │   ├── trait AsGlesFrame: pub
+│   │   └── trait AsGlesRenderer: pub
+│   └── mod shaders: pub
+│       └── struct Shaders: pub
 ├── mod screenshot: pub(crate)
 ├── mod space: pub(crate)
 │   └── struct PhysicalSpace: pub

@@ -258,6 +258,7 @@ Motion event during a tomoe.grab_pointer grab.
 - `width: integer` — thickness in physical pixels; 1 is one device pixel at any scale (default 2)
 - `focused: string` — "#rrggbb" or "#rrggbbaa"
 - `unfocused: string` — "#rrggbb" or "#rrggbbaa"
+- `radius: integer` — window corner radius in physical pixels; 0 disables rounding, fullscreen windows never round (default 0)
 
 ### Keyboard
 

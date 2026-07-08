@@ -243,6 +243,9 @@ pub struct Settings {
     pub border_width: i32,
     pub border_focused: [f32; 4],
     pub border_unfocused: [f32; 4],
+    /// Window corner radius in physical pixels; 0 disables rounding.
+    /// Fullscreen windows never round (keeps direct scanout).
+    pub corner_radius: i32,
     /// What "Mod" means in bind combos and pointer-event mods.
     pub mod_key: crate::input::ModKey,
     /// Focus the window under the pointer as it moves (sloppy focus:
@@ -290,6 +293,7 @@ impl Default for Settings {
             border_width: 2,
             border_focused: parse_color("#7aa2f7").unwrap(),
             border_unfocused: parse_color("#3b4261").unwrap(),
+            corner_radius: 0,
             mod_key: crate::input::ModKey::default(),
             focus_follows_mouse: false,
             tearing: false,
@@ -1232,6 +1236,9 @@ impl LuaRuntime {
                             Some(c) => settings.border_unfocused = c,
                             None => warn!("invalid border.unfocused color {color:?}"),
                         }
+                    }
+                    if let Ok(radius) = border.get::<i32>("radius") {
+                        settings.corner_radius = radius.max(0);
                     }
                 }
                 Ok(())
