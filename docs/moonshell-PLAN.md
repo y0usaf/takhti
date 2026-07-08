@@ -67,9 +67,14 @@ zero wire change), snapshots bridged into `shell.services.compositor`.
 Verified live + on a nested tomoe: workspace switches, window counts,
 focus titles, disconnect/reconnect, hot-reload re-seed. **7.7 MB RSS
 (release, full test bar, connected), 0 voluntary ctx switches / 5 s
-idle.** Next open item: **M3 §2 — niri/Hyprland/Sway compositor
-backends** (port nur's logic onto event sockets; the workspaces widget
-must live-update on niri for the M3 accept).
+idle.** §2 done (2026-07-08) — niri/Hyprland/Sway backends, hand-rolled
+protocols (no niri-ipc/hyprland/swayipc crates), shared `wire.rs`
+plumbing, tomoe backend refactored onto it. Verified live on niri and
+sway (nested/headless); **7.1 MB RSS (release) connected to niri,
+0 voluntary ctx switches / 5 s idle**. Hyprland is unit-tested only —
+nested Hyprland crashes in this environment (known gap, §2 notes).
+Next open item: **M3 §3 — battery service** (UPower over zbus, sysfs +
+inotify fallback).
 
 Two working inputs exist:
 
@@ -107,8 +112,8 @@ Two working inputs exist:
       `playerctl`, `bluetoothctl`, `powerprofilesctl`) are the memory/
       wakeup cost we're eliminating. Compositor auto-detect done
       (M3 §1; tomoe > Hyprland > niri > Sway)
-- [ ] Compositor backends: Hyprland, niri, Sway (port) (M3 §2);
-      **tomoe done** (M3 §1)
+- [x] Compositor backends: Hyprland, niri, Sway (M3 §2) + tomoe
+      (M3 §1) — event-driven, thread-free, no compositor crates
 - [ ] nix: home-manager module + `mkBar`-style lib helpers (post-M3,
       composed with tomoe's module)
 
@@ -268,9 +273,44 @@ M3 breakdown (services, natively):
    focus titles) and nested tomoe (workspace switch/move, counts,
    disconnect → reconnect, hot-reload re-seed). Measured: 7.7 MB RSS
    release, 0 voluntary ctx switches / 5 s idle while connected.
-2. [ ] niri, Hyprland, Sway backends — port nur's logic onto event
-   sockets (niri event stream, Hyprland socket2, sway subscribe), no
-   polling; workspaces widget must live-update on niri (M3 accept).
+2. [x] niri, Hyprland, Sway backends (2026-07-08) — nur's *logic*
+   ported onto event sockets; nur's *implementations* (threads + the
+   `niri-ipc`/`hyprland`/`swayipc` crates — the `hyprland` crate drags
+   tokio, a locked-decision violation) were not. All three are
+   hand-rolled protocol clients in the tomoe backend's shape:
+   nonblocking socket as a calloop `Generic`, `serde_json::Value`
+   parsing (tolerant of version skew — unknown events skip instead of
+   failing a typed deserialize), retry timer only while disconnected,
+   notify only when the mapped snapshot changed. Shared plumbing
+   extracted to `compositor/wire.rs` (`read_available`, `take_line`,
+   `arm_retry`, `RETRY`); tomoe backend refactored onto it — one
+   mechanism, four consumers (doctrine 05). Per backend: **niri** =
+   `"EventStream"` request on `$NIRI_SOCKET`, then ndjson events into
+   a pure `Model` (workspaces BTreeMap + windows map + focused id;
+   initial burst is just events — no snapshot requests); **Hyprland**
+   = `.socket2.sock` event lines classified by `relevant()`, any hit
+   coalesces (per wakeup) into one re-fetch of `j/workspaces` +
+   `j/activeworkspace` + `j/activewindow` over short-lived blocking
+   socket1 connections (1 s timeout — Hyprland closes after each
+   reply; no line carries enough state to track incrementally);
+   **sway** = i3 binary framing hand-rolled (`frame`/`take_frame`/
+   `read_frame`), one subscribe connection (`workspace`+`window`),
+   re-fetch `GET_WORKSPACES` + `GET_TREE` per event batch; the tree
+   walk counts leaf views per workspace and takes the focused view's
+   title — fixing a nur bug where a focused *empty workspace* node
+   became the "window title". Initial seeding rides a calloop
+   `Timer::immediate` because `notify` needs the loop's `&mut D`
+   (fetch-based backends have no connect-time frames to piggyback on).
+   Verified live: **niri** (nested under headless sway — workspace
+   switch, spawn/close window counts, title changes including
+   post-open retitles; 7.1 MB RSS release, 0 voluntary ctx switches /
+   5 s idle) and **sway** (headless — same drill; compositor death
+   correctly takes the bar down with it); **tomoe** regression-checked
+   on the live session post-refactor. **Hyprland: unit tests only**
+   (`parse_state`, `relevant`, socket-dir discovery paths) — nested
+   Hyprland crashes at boot in this environment (AsyncResourceGatherer
+   abort, both under headless sway and on tomoe); flag for a first
+   real Hyprland session before calling M3 §7 acceptance.
 3. [ ] battery: UPower over zbus, sysfs + inotify fallback; replaces
    the placeholder facade through the same `:set()` path.
 4. [ ] network (NetworkManager zbus) + mpris (zbus, playerctld-style
@@ -512,6 +552,20 @@ tiny before the runtime landed on top.
   `ShellCtx` (a separate Rc), never `Engine` — a `shell.*` function
   that reached back into `Engine` would re-borrow and panic; keep the
   action-queue indirection when adding API
+- From M3 §2: stale socket *files* defeat path-exists detection — a
+  dead nested tomoe left `tomoe.wayland-2.sock` behind and `detect()`
+  picked tomoe while running under sway (connect then refused,
+  retrying forever). Unix sockets don't unlink themselves; rm stale
+  test sockets, and treat exists() as a hint, not proof of life
+- From M3 §2: when a backend must *fetch* its initial state (no
+  connect-time frames to ride), deliver it through a calloop
+  `Timer::immediate` — `notify` needs the loop's `&mut D`, which never
+  exists outside a source callback
+- From M3 §2: nested-compositor test recipe — headless sway (pixman)
+  hosts niri fine (winit + software EGL); a niri window opened on the
+  *live* session dies in seconds (something closes it); Hyprland
+  refuses to nest at all here. `niri msg` has no `--socket` flag —
+  export `NIRI_SOCKET`
 - From M1 §3: shm buffers alternate, so a partial-damage frame must
   either fully repaint (current: correctness by determinism —
   over-reported damage is always safe) or track per-slot buffer age

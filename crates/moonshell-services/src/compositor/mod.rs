@@ -4,11 +4,20 @@
 //! (doctrine 05: every backend is one module with one `start`, all
 //! pushing [`CompositorState`] snapshots through the same callback).
 //! tomoe is detected first (`$TOMOE_SOCKET`, or its derived socket
-//! path existing); niri/Hyprland/Sway land in M3 §2.
+//! path existing), then Hyprland > niri > Sway (nur's precedence).
+//! Every backend is thread-free: an event socket as a nonblocking
+//! calloop `Generic`, a retry timer only while disconnected.
 
+pub mod hyprland;
+pub mod niri;
+pub mod sway;
 pub mod tomoe;
+mod wire;
 
 use calloop::LoopHandle;
+
+/// The snapshot callback every backend pushes through.
+type Notify<D> = Box<dyn FnMut(&mut D, &CompositorState)>;
 
 /// One workspace as a bar sees it. Which workspaces to *display*
 /// (all, occupied-only, …) is the widget's policy — backends report
@@ -93,19 +102,17 @@ pub fn start<D: 'static>(
     handle: &LoopHandle<'static, D>,
     notify: impl FnMut(&mut D, &CompositorState) + 'static,
 ) -> Result<Option<Compositor>, Error> {
-    match detect() {
-        Some(Compositor::Tomoe) => {
-            tomoe::start(handle.clone(), Box::new(notify))?;
-            Ok(Some(Compositor::Tomoe))
-        }
-        Some(other) => {
-            tracing::warn!(
-                "{other} detected — backend lands in M3 §2; workspace tracking disabled"
-            );
-            Ok(Some(other))
-        }
-        None => Ok(None),
+    let Some(compositor) = detect() else {
+        return Ok(None);
+    };
+    let notify: Notify<D> = Box::new(notify);
+    match compositor {
+        Compositor::Tomoe => tomoe::start(handle.clone(), notify)?,
+        Compositor::Niri => niri::start(handle.clone(), notify)?,
+        Compositor::Hyprland => hyprland::start(handle.clone(), notify)?,
+        Compositor::Sway => sway::start(handle.clone(), notify)?,
     }
+    Ok(Some(compositor))
 }
 
 #[cfg(test)]

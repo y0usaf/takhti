@@ -19,26 +19,21 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::{ErrorKind, Read, Write};
+use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Duration;
 
 use calloop::generic::Generic;
-use calloop::timer::{TimeoutAction, Timer};
 use calloop::{Interest, LoopHandle, Mode, PostAction};
 use serde_json::{json, Value};
 
-use super::{CompositorState, Error, Workspace};
+use super::wire::{self, RETRY};
+use super::{CompositorState, Error, Notify, Workspace};
 
-/// Reconnect cadence while the compositor is gone.
-const RETRY: Duration = Duration::from_secs(2);
 /// Connect-time snapshot request ids (the only requests we ever send).
 const ID_WINDOWS: u64 = 1;
 const ID_WM_STATE: u64 = 2;
-
-type Notify<D> = Box<dyn FnMut(&mut D, &CompositorState)>;
 
 /// The pure protocol model: frames in, state out. No sockets, no
 /// loop — unit-testable in isolation.
@@ -203,7 +198,9 @@ pub(super) fn start<D: 'static>(
     }));
     if let Err(e) = try_connect(&backend) {
         tracing::warn!("tomoe IPC connect: {e}; retrying every {RETRY:?}");
-        arm_retry(&backend);
+        let be = backend.clone();
+        let handle = backend.borrow().handle.clone();
+        wire::arm_retry(&handle, "tomoe IPC", Rc::new(move || try_connect(&be)));
     }
     Ok(())
 }
@@ -237,29 +234,12 @@ fn try_connect<D: 'static>(be: &Rc<RefCell<Backend<D>>>) -> std::io::Result<()> 
         .insert_source(
             Generic::new(stream, Interest::READ, Mode::Level),
             move |_, stream, data: &mut D| {
-                let mut eof = false;
+                let eof;
                 let mut changed = false;
                 {
                     let b = &mut *be.borrow_mut();
-                    loop {
-                        let mut chunk = [0u8; 4096];
-                        // NoIoDrop has no DerefMut; &UnixStream is Read.
-                        match (&**stream).read(&mut chunk) {
-                            Ok(0) => {
-                                eof = true;
-                                break;
-                            }
-                            Ok(n) => b.buf.extend_from_slice(&chunk[..n]),
-                            Err(e) if e.kind() == ErrorKind::WouldBlock => break,
-                            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-                            Err(e) => {
-                                tracing::warn!("tomoe IPC read: {e}");
-                                eof = true;
-                                break;
-                            }
-                        }
-                    }
-                    while let Some(line) = take_line(&mut b.buf) {
+                    eof = wire::read_available(stream, &mut b.buf);
+                    while let Some(line) = wire::take_line(&mut b.buf) {
                         match serde_json::from_slice::<Value>(&line) {
                             Ok(frame) => changed |= b.model.handle_frame(&frame),
                             Err(e) => tracing::warn!("tomoe IPC: bad frame: {e}"),
@@ -276,7 +256,9 @@ fn try_connect<D: 'static>(be: &Rc<RefCell<Backend<D>>>) -> std::io::Result<()> 
                 }
                 if eof {
                     tracing::info!("tomoe IPC disconnected; retrying every {RETRY:?}");
-                    arm_retry(&be);
+                    let handle = be.borrow().handle.clone();
+                    let be = be.clone();
+                    wire::arm_retry(&handle, "tomoe IPC", Rc::new(move || try_connect(&be)));
                     Ok(PostAction::Remove)
                 } else {
                     Ok(PostAction::Continue)
@@ -287,50 +269,12 @@ fn try_connect<D: 'static>(be: &Rc<RefCell<Backend<D>>>) -> std::io::Result<()> 
     Ok(())
 }
 
-/// The reconnect timer — the only periodic wakeup, alive only while
-/// the compositor is unreachable.
-fn arm_retry<D: 'static>(be: &Rc<RefCell<Backend<D>>>) {
-    let handle = be.borrow().handle.clone();
-    let be = be.clone();
-    let armed = handle.insert_source(
-        Timer::from_duration(RETRY),
-        move |_, _, _| match try_connect(&be) {
-            Ok(()) => {
-                tracing::info!("tomoe IPC reconnected");
-                TimeoutAction::Drop
-            }
-            Err(_) => TimeoutAction::ToDuration(RETRY),
-        },
-    );
-    if let Err(e) = armed {
-        tracing::error!("tomoe IPC: arming retry timer: {e} — reconnect disabled");
-    }
-}
-
-/// Split one `\n`-terminated line off the front of `buf`.
-fn take_line(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
-    let pos = buf.iter().position(|&b| b == b'\n')?;
-    let rest = buf.split_off(pos + 1);
-    let mut line = std::mem::replace(buf, rest);
-    line.pop(); // the newline
-    Some(line)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn frame(s: &str) -> Value {
         serde_json::from_str(s).unwrap()
-    }
-
-    #[test]
-    fn take_line_splits_and_keeps_tail() {
-        let mut buf = b"one\ntwo\nthr".to_vec();
-        assert_eq!(take_line(&mut buf).as_deref(), Some(&b"one"[..]));
-        assert_eq!(take_line(&mut buf).as_deref(), Some(&b"two"[..]));
-        assert_eq!(take_line(&mut buf), None);
-        assert_eq!(buf, b"thr");
     }
 
     #[test]
