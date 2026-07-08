@@ -74,6 +74,8 @@ Done and working:
 - Session lock (ext-session-lock-v1, swaylock incl. crashed-locker
   fallback) and idle (ext-idle-notify + zwp-idle-inhibit, swayidle) —
   `lock.rs` + idle plumbing in `state.rs`
+- xdg-activation: token validation + activate/urgent `on_window_request`
+  events, native default focus, pre-map token stash (`handlers.rs`)
 - XWayland via xwayland-satellite (niri-shape: tomoe owns the X11
   sockets/lock file, exports `DISPLAY` at startup, spawns satellite
   on-demand via `-listenfd` on first connection, respawns on next
@@ -162,7 +164,13 @@ Done and working:
 - [x] ext-session-lock-v1 (niri-shape: `locked` confirmed only after every
       output rendered a locked frame; dark-red backdrop fallback; dead-locker
       replacement; locked scene also fed to all capture paths)
-- [ ] xdg-activation
+- [x] xdg-activation (niri-shape validation: serial-less tokens are
+      urgency-only, serials checked against keyboard/pointer last-enter,
+      10 s timeout + prune timer; requests route through
+      `on_window_request` as "activate"/"urgent" so Lua policy decides —
+      wm.lua consumes "activate" by switching to the window's workspace
+      — native default focuses ("activate") or ignores ("urgent");
+      tokens presented pre-map are stashed and honored at `add_window`)
 - [x] Primary selection (focus follows keyboard focus, same as the clipboard)
 - [x] libinput device config (tap, accel, natural scroll, DWT, scroll/click
       method…) via `settings.touchpad`/`settings.mouse`, per-device
@@ -297,7 +305,7 @@ Items it pulls on:
 - [ ] Window control surface for a taskbar (activate/close/minimize):
       either wlr-foreign-toplevel-management (M5 §1) or equivalent
       `tomoe-ipc` methods — decide when moonshell's taskbar widget
-      needs it; xdg-activation (M5 §2) is a prerequisite for activate
+      needs it; xdg-activation (M5 §2, landed) unblocks activate
 - [ ] Default moonshell bar config shipped as content alongside
       `wm.lua`, once moonshell M2 (Lua runtime) lands
 - [ ] Combined home-manager module composing both flakes (post
@@ -578,7 +586,14 @@ setup. — All landed.*
    policy path clients use, not bypass Lua; activate wants xdg-activation
    (§2) for the focus-stealing story — also unblocks the moonshell
    taskbar item
-2. xdg-activation
+2. ~~xdg-activation~~ done — mechanics in the niri gap list above;
+   activate/urgent ride the existing `on_window_request` policy path, so
+   wlr-foreign-toplevel-management's activate (§1) can reuse it directly.
+   Compositor-side token creation for `tomoe.spawn` (exporting
+   `XDG_ACTIVATION_TOKEN` to children, niri-style) is still open — only
+   matters once launchers run as compositor spawns. Live check pending:
+   a real notification-click focus (needs a daemon + client that redeem
+   tokens; global + request path verified nested)
 3. Gamma control / night light
 
 *Accept: taskbar sees windows, activation focuses them, night light

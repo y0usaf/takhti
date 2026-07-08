@@ -262,6 +262,16 @@ tomoe.on_window_request(function(ev)
   elseif ev.type == "unfullscreen" then
     M.set_fullscreen(ev.window, false)
     return true
+  elseif ev.type == "activate" then
+    -- xdg-activation with a valid token (e.g. a notification click):
+    -- switch to the window's workspace, then focus it.
+    for i = 1, M.workspace_count do
+      if find(M.workspaces[i], ev.window) then
+        M.switch(i)
+        ev.window:focus()
+        return true
+      end
+    end
   end
 end)
 

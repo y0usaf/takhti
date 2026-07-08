@@ -2604,12 +2604,13 @@ impl LuaRuntime {
 
     /// A client asked for a state change or an interactive drag (`ev.type`
     /// is "fullscreen", "unfullscreen", "maximize", "unmaximize", "minimize",
-    /// "move", or "resize"; `ev.output` names the output a fullscreen request
-    /// targeted; `ev.edges` names the edge/corner a resize drags, e.g.
-    /// "bottom_right"). Returns true if a hook consumed the request — the
-    /// consumer takes over responding, typically via `win:set_fullscreen` +
-    /// `win:set_geometry`, or `tomoe.grab_pointer` for move/resize;
-    /// unconsumed requests get the native default (drags are dropped).
+    /// "move", "resize", "activate", or "urgent"; `ev.output` names the
+    /// output a fullscreen request targeted; `ev.edges` names the edge/corner
+    /// a resize drags, e.g. "bottom_right"). Returns true if a hook consumed
+    /// the request — the consumer takes over responding, typically via
+    /// `win:set_fullscreen` + `win:set_geometry`, or `tomoe.grab_pointer` for
+    /// move/resize; unconsumed requests get the native default (drags are
+    /// dropped, xdg-activation "activate" focuses, "urgent" is a no-op).
     pub fn emit_window_request(
         &mut self,
         id: u64,

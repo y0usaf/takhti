@@ -60,6 +60,7 @@ crate tomoe
 ├── mod foreign_toplevel: pub(crate)
 │   └── struct ForeignWindowId: pub
 ├── mod handlers: pub(crate)
+│   └── struct UrgentOnlyMarker: pub(self)
 ├── mod input: pub(crate)
 │   ├── enum Action: pub
 │   ├── struct Bind: pub

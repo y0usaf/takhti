@@ -50,6 +50,7 @@ use smithay::wayland::image_copy_capture::{
 use smithay::wayland::session_lock::{LockSurface, SessionLockManagerState};
 use smithay::wayland::shell::xdg::{XdgShellState, XdgToplevelSurfaceData};
 use smithay::wayland::shm::ShmState;
+use smithay::wayland::xdg_activation::{XdgActivationState, XdgActivationTokenData};
 use tracing::{info, warn};
 
 use crate::backend::Backend;
@@ -167,6 +168,12 @@ pub struct Tomoe {
     /// Foreign-toplevel handles by window id, mapped windows only
     /// (`foreign_toplevel.rs`).
     pub foreign_toplevels: HashMap<u64, ForeignToplevelHandle>,
+    /// xdg-activation token registry; policy lives in `handlers.rs`, stale
+    /// tokens are pruned by a timer armed in `new`.
+    pub activation_state: XdgActivationState,
+    /// Activation tokens presented for still-unmapped toplevels (startup
+    /// notification), honored when the window maps (`add_window`).
+    pub pending_activations: HashMap<WlSurface, XdgActivationTokenData>,
     pub session_lock_state: SessionLockManagerState,
     /// ext-session-lock progression (see `lock.rs`).
     pub lock_state: LockState,
@@ -285,6 +292,23 @@ impl Tomoe {
             ToplevelCaptureSourceState::new::<Self>(&display_handle);
         let image_copy_capture_state = ImageCopyCaptureState::new::<Self>(&display_handle);
         let foreign_toplevel_state = ForeignToplevelListState::new::<Self>(&display_handle);
+        let activation_state = XdgActivationState::new::<Self>(&display_handle);
+        // Prune activation tokens (and unmapped-window stashes) that were
+        // never redeemed — requests only honor tokens younger than the
+        // timeout anyway, so expired entries are pure leak.
+        let timeout = crate::handlers::XDG_ACTIVATION_TOKEN_TIMEOUT;
+        let timer = Timer::from_duration(timeout);
+        if let Err(err) = loop_handle.insert_source(timer, move |_, _, tomoe| {
+            tomoe
+                .activation_state
+                .retain_tokens(|_, data| data.timestamp.elapsed() < timeout);
+            tomoe
+                .pending_activations
+                .retain(|_, data| data.timestamp.elapsed() < timeout);
+            TimeoutAction::ToDuration(timeout)
+        }) {
+            warn!("error arming the xdg-activation prune timer: {err}");
+        }
         let session_lock_state = SessionLockManagerState::new::<Self, _>(&display_handle, |_| true);
         let idle_notifier_state = IdleNotifierState::new(&display_handle, loop_handle.clone());
         let idle_inhibit_state = IdleInhibitManagerState::new::<Self>(&display_handle);
@@ -343,6 +367,8 @@ impl Tomoe {
             pending_capture_frames: Vec::new(),
             foreign_toplevel_state,
             foreign_toplevels: HashMap::new(),
+            activation_state,
+            pending_activations: HashMap::new(),
             session_lock_state,
             lock_state: LockState::default(),
             lock_surfaces: HashMap::new(),
@@ -989,6 +1015,22 @@ impl Tomoe {
         }
         // After Lua so subscribers see the geometry policy just assigned.
         crate::ipc::notify_window_open(self, id);
+
+        // A still-fresh activation token presented before the map (startup
+        // notification): same policy path as post-map activation — ask Lua,
+        // then fall back to focusing, the protocol's whole point. Runs after
+        // the open hooks so policy has already placed the window.
+        let token_data = window
+            .toplevel()
+            .and_then(|t| self.pending_activations.remove(t.wl_surface()));
+        if let Some(data) = token_data {
+            if data.timestamp.elapsed() < crate::handlers::XDG_ACTIVATION_TOKEN_TIMEOUT
+                && !self.emit_window_request(id, "activate", None, None)
+            {
+                self.focus_window(Some(&window));
+                self.queue_redraw_all();
+            }
+        }
     }
 
     /// A toplevel was destroyed.

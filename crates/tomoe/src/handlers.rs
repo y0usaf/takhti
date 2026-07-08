@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::renderer::utils::{on_commit_buffer_handler, with_renderer_surface_state};
 use smithay::desktop::{
@@ -79,13 +81,17 @@ use smithay::wayland::idle_notify::{IdleNotifierHandler, IdleNotifierState};
 use smithay::wayland::session_lock::{
     LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
 };
+use smithay::wayland::xdg_activation::{
+    XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
+};
 use smithay::{
     delegate_compositor, delegate_data_control, delegate_data_device, delegate_dmabuf,
     delegate_drm_syncobj, delegate_ext_data_control, delegate_fractional_scale,
     delegate_idle_inhibit, delegate_idle_notify, delegate_kde_decoration, delegate_layer_shell,
     delegate_output, delegate_pointer_constraints, delegate_presentation,
     delegate_primary_selection, delegate_relative_pointer, delegate_seat, delegate_session_lock,
-    delegate_shm, delegate_viewporter, delegate_xdg_decoration, delegate_xdg_shell,
+    delegate_shm, delegate_viewporter, delegate_xdg_activation, delegate_xdg_decoration,
+    delegate_xdg_shell,
 };
 use tracing::{debug, trace, warn};
 
@@ -374,6 +380,7 @@ impl XdgShellHandler for Tomoe {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        self.pending_activations.remove(surface.wl_surface());
         self.unmapped_windows
             .retain(|w| w.toplevel().map(|t| t.wl_surface()) != Some(surface.wl_surface()));
         let window = self
@@ -387,6 +394,84 @@ impl XdgShellHandler for Tomoe {
     }
 }
 delegate_xdg_shell!(Tomoe);
+
+// ─── xdg-activation ───────────────────────────────────────────────────────────
+//
+// Focus stealing with consent (niri-shape): a focused client hands a token to
+// another process (via env or D-Bus), and presenting that token with a valid,
+// recent input serial lets the target window take focus — the mechanism
+// behind "clicking a notification focuses the app". Each request becomes an
+// `on_window_request` event ("activate", or "urgent" for serial-less tokens)
+// so Lua policy can switch workspaces first; the native default focuses the
+// window (activate) or does nothing (urgent — tomoe has no urgency state).
+
+/// Tokens older than this are ignored, and the prune timer in `Tomoe::new`
+/// drops them from the registry (niri's value).
+pub const XDG_ACTIVATION_TOKEN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Marker for tokens created without an input serial (notification daemons,
+/// tray clicks). Not specified, but common client behavior treats these as
+/// urgency pings rather than focus steals — so do we (and niri).
+struct UrgentOnlyMarker;
+
+impl XdgActivationHandler for Tomoe {
+    fn activation_state(&mut self) -> &mut XdgActivationState {
+        &mut self.activation_state
+    }
+
+    fn token_created(&mut self, _token: XdgActivationToken, data: XdgActivationTokenData) -> bool {
+        // Tokens without a serial are urgency-only (see UrgentOnlyMarker).
+        let Some((serial, seat)) = data.serial else {
+            data.user_data.insert_if_missing(|| UrgentOnlyMarker);
+            return true;
+        };
+        let Some(seat) = Seat::<Self>::from_resource(&seat) else {
+            return false;
+        };
+
+        // Accept serials no older than the device's last focus enter — check
+        // both keyboard and pointer, since layer-shell surfaces without
+        // keyboard interactivity only ever saw pointer serials.
+        let keyboard_valid = seat
+            .get_keyboard()
+            .and_then(|k| k.last_enter())
+            .is_some_and(|last_enter| serial.is_no_older_than(&last_enter));
+        let pointer_valid = seat
+            .get_pointer()
+            .and_then(|p| p.last_enter())
+            .is_some_and(|last_enter| serial.is_no_older_than(&last_enter));
+        keyboard_valid || pointer_valid
+    }
+
+    fn request_activation(
+        &mut self,
+        token: XdgActivationToken,
+        token_data: XdgActivationTokenData,
+        surface: WlSurface,
+    ) {
+        if token_data.timestamp.elapsed() < XDG_ACTIVATION_TOKEN_TIMEOUT {
+            if let Some(id) = self.window_id_for_surface(&surface) {
+                let urgent = token_data.user_data.get::<UrgentOnlyMarker>().is_some();
+                let kind = if urgent { "urgent" } else { "activate" };
+                let consumed = self.emit_window_request(id, kind, None, None);
+                if !consumed && !urgent {
+                    let window = self.windows.get(&id).cloned();
+                    if let Some(window) = window {
+                        self.focus_window(Some(&window));
+                        self.queue_redraw_all();
+                    }
+                }
+            } else if self.window_for_surface(&surface).is_some() {
+                // Still unmapped: honor the token when the window maps
+                // (`add_window`), the common startup-notification path.
+                self.pending_activations.insert(surface, token_data);
+            }
+        }
+
+        self.activation_state.remove_token(&token);
+    }
+}
+delegate_xdg_activation!(Tomoe);
 
 // ─── xdg-decoration / kde-server-decoration ───────────────────────────────────
 //

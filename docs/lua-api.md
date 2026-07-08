@@ -58,7 +58,7 @@ A toplevel window. Reads reflect the snapshot taken before this Lua entry; write
 - `tomoe.on_outputs_changed(fn)` — Run `fn` when outputs are added, removed, or reconfigured.
 - `tomoe.on_pointer_button(fn)` — Run `fn` on pointer button events; return truthy to consume the event (it is not forwarded to the client under the pointer).
 - `tomoe.on_pointer_axis(fn)` — Run `fn` on scroll events; return truthy to consume.
-- `tomoe.on_window_request(fn)` — Run `fn` when a client requests a state change or an interactive drag. Return truthy to consume: the consumer takes over responding, typically via set_fullscreen + set_geometry, or grab_pointer for move/resize. Unconsumed requests get the native default (drags are dropped).
+- `tomoe.on_window_request(fn)` — Run `fn` when a client requests a state change or an interactive drag. Return truthy to consume: the consumer takes over responding, typically via set_fullscreen + set_geometry, or grab_pointer for move/resize. Unconsumed requests get the native default (drags are dropped, xdg-activation "activate" focuses the window, "urgent" is a no-op).
 - `tomoe.on_pointer_enter(fn)` — Run `fn` when the pointer enters a window.
 - `tomoe.on_pointer_leave(fn)` — Run `fn` when the pointer leaves a window.
 - `tomoe.on_screencast_request(fn)` — Decide what a screencast portal request captures (the ScreenCast portal asks over IPC on SelectSources). Answer by returning a selection table (`{ output = "DP-1" }` or `{ window = win }`) or `false` to deny — or call `req:defer()` and answer later with `req:resolve(sel)` / `req:deny()` from another callback (e.g. a tomoe.ui.menu selection): the portal waits, the compositor never does. Single slot: registering again replaces the handler. With no handler the portal falls back to its environment-variable heuristics. The default menu picker ships as the "screencast" module.
@@ -185,10 +185,10 @@ Fields shared by pointer events.
 
 ### WindowRequestEvent
 
-A client asked for a state change or an interactive drag.
+A client asked for a state change or an interactive drag. "activate" and "urgent" come from xdg-activation: another process presented a token asking to focus the window ("urgent" when the token had no input serial — a notification ping rather than a sanctioned focus steal). Unconsumed, "activate" focuses the window natively and "urgent" does nothing.
 
 - `window: Window`
-- `type: "fullscreen"|"unfullscreen"|"maximize"|"unmaximize"|"minimize"|"move"|"resize"`
+- `type: "fullscreen"|"unfullscreen"|"maximize"|"unmaximize"|"minimize"|"move"|"resize"|"activate"|"urgent"`
 - `output: string?` — the output a fullscreen request targeted
 - `edges: string?` — the edge/corner a resize drags, e.g. "bottom_right"
 

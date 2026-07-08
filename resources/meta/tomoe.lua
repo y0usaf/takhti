@@ -180,7 +180,8 @@ function tomoe.on_pointer_axis(fn) end
 ---Run `fn` when a client requests a state change or an interactive drag.
 ---Return truthy to consume: the consumer takes over responding, typically
 ---via set_fullscreen + set_geometry, or grab_pointer for move/resize.
----Unconsumed requests get the native default (drags are dropped).
+---Unconsumed requests get the native default (drags are dropped,
+---xdg-activation "activate" focuses the window, "urgent" is a no-op).
 ---@param fn fun(ev: WindowRequestEvent): boolean?
 function tomoe.on_window_request(fn) end
 
@@ -396,10 +397,14 @@ function UiWidget:close() end
 ---@field dx number # scroll delta
 ---@field dy number
 
----A client asked for a state change or an interactive drag.
+---A client asked for a state change or an interactive drag. "activate" and
+---"urgent" come from xdg-activation: another process presented a token asking
+---to focus the window ("urgent" when the token had no input serial — a
+---notification ping rather than a sanctioned focus steal). Unconsumed,
+---"activate" focuses the window natively and "urgent" does nothing.
 ---@class WindowRequestEvent
 ---@field window Window
----@field type "fullscreen"|"unfullscreen"|"maximize"|"unmaximize"|"minimize"|"move"|"resize"
+---@field type "fullscreen"|"unfullscreen"|"maximize"|"unmaximize"|"minimize"|"move"|"resize"|"activate"|"urgent"
 ---@field output string? # the output a fullscreen request targeted
 ---@field edges string? # the edge/corner a resize drags, e.g. "bottom_right"
 
