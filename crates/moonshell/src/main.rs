@@ -3,25 +3,39 @@
 //! With a config (`--config`, `$MOONSHELL_CONFIG`, or
 //! `~/.config/moonshell/init.lua`) it boots the Lua runtime, executes
 //! the config, and drains the runtime's action queue — window
-//! creations, timers to arm, dirty marks, the quit flag — after config
-//! exec and once per loop pass ([`Shell::run_with`]). `exec_async`
-//! replies arrive over a calloop channel; the display snapshot behind
-//! `shell.displays()` is refreshed each drain. With no config it maps one layer surface and
+//! creations, timers to arm, watches to register, dirty marks, the
+//! reload and quit flags — after config exec and once per loop pass
+//! ([`Shell::run_with`]). The drain state lives in [`Engine`], which
+//! owns the [`Vm`] so hot reload (inotify on the config tree, or
+//! `shell.reload()`) can destroy the Lua windows and swap in a fresh
+//! one. `exec_async` replies arrive over a calloop channel; the
+//! display snapshot behind `shell.displays()` is refreshed each drain.
+//! With no config it maps one layer surface and
 //! draws a version string: the doctrine-06 bare-core artifact.
 //! `--boot-check` exits 0 right after every window committed its first
 //! frame, which is what `nix flake check` runs under a headless
 //! compositor.
 
+mod watcher;
+
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Duration;
 
 use anyhow::Context as _;
+use calloop::generic::Generic;
 use calloop::timer::{TimeoutAction, Timer};
+use calloop::{Interest, LoopHandle, Mode, PostAction};
 use moonshell_render::element::{Align, Edges, Flex, Spacer, Style, Text};
 use moonshell_render::{Element, Renderer, Rgba, Scene, SceneDamage};
 use moonshell_runtime::{LuaPainter, ShellCtx, Vm};
-use moonshell_surface::{Canvas, Damage, DamageRect, Edge, LayerOptions, Painter, Shell};
+use moonshell_surface::{Canvas, Damage, DamageRect, Edge, LayerOptions, Painter, Shell, WindowId};
+use watcher::Watcher;
+
+/// Editors save in bursts (write, rename, chmod); coalesce them into
+/// one reload.
+const RELOAD_DEBOUNCE: Duration = Duration::from_millis(100);
 
 const BG: Rgba = Rgba::new(0x14, 0x14, 0x1e, 0xff);
 const FG: Rgba = Rgba::new(0xc8, 0xc8, 0xd8, 0xff);
@@ -108,28 +122,143 @@ impl Painter for VersionBar {
 
 /// Locate the config: explicit `--config` and `$MOONSHELL_CONFIG` must
 /// exist (a typo should fail loudly); the default location is optional
-/// (absent = the bare version bar).
+/// (absent = the bare version bar). Canonicalized — the watcher
+/// compares event paths literally, and the parent dir anchors the
+/// config-tree watch.
 fn resolve_config(cli: Option<PathBuf>) -> anyhow::Result<Option<PathBuf>> {
-    if let Some(p) = cli {
+    let found = if let Some(p) = cli {
         anyhow::ensure!(p.is_file(), "--config: no such file: {}", p.display());
-        return Ok(Some(p));
-    }
-    if let Some(p) = std::env::var_os("MOONSHELL_CONFIG") {
+        Some(p)
+    } else if let Some(p) = std::env::var_os("MOONSHELL_CONFIG") {
         let p = PathBuf::from(p);
         anyhow::ensure!(
             p.is_file(),
             "$MOONSHELL_CONFIG: no such file: {}",
             p.display()
         );
-        return Ok(Some(p));
+        Some(p)
+    } else {
+        let base = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
+        base.map(|b| b.join("moonshell").join("init.lua"))
+            .filter(|p| p.is_file())
+    };
+    found
+        .map(|p| {
+            p.canonicalize()
+                .with_context(|| format!("resolving config path {}", p.display()))
+        })
+        .transpose()
+}
+
+/// The config-mode loop state: the VM, the action-queue ctx, and the
+/// windows/watches the current config owns. [`Engine::tick`] is the
+/// per-pass drain [`Shell::run_with`] calls; [`Engine::reload`] swaps
+/// the VM wholesale (fresh globals, nothing leaks across reloads).
+struct Engine {
+    ctx: Rc<ShellCtx>,
+    vm: Vm,
+    renderer: Rc<RefCell<Renderer>>,
+    config: PathBuf,
+    /// Windows the current config created — destroyed on reload.
+    windows: Vec<WindowId>,
+    /// `None` = inotify unavailable; hot reload degrades to
+    /// `shell.reload()` only (warned once at boot).
+    watcher: Option<Watcher>,
+    loop_handle: LoopHandle<'static, Shell>,
+    /// A debounce timer is already armed.
+    reload_scheduled: bool,
+}
+
+impl Engine {
+    /// Drain the action queue while holding `&mut Shell`. Snapshot in
+    /// (displays), actions out (everything below).
+    fn tick(&mut self, shell: &mut Shell) {
+        self.ctx.set_displays(shell.displays());
+        if self.ctx.take_reload() {
+            self.reload(shell);
+        }
+        for p in self.ctx.take_pending() {
+            let painter = LuaPainter::new(self.vm.lua().clone(), p.shared, self.renderer.clone());
+            self.windows
+                .push(shell.create_window(p.options, Box::new(painter)));
+        }
+        for t in self.ctx.take_timers() {
+            // Armed only because a shell.interval/once exists — the
+            // zero-idle-wakeup discipline. `fire` returning false means
+            // the VM is gone; the source removes itself.
+            let timer = Timer::from_duration(t.delay);
+            let inserted =
+                self.loop_handle
+                    .insert_source(timer, move |_, _, _shell: &mut Shell| {
+                        match (t.fire(), t.period) {
+                            (true, Some(period)) => TimeoutAction::ToDuration(period),
+                            _ => TimeoutAction::Drop,
+                        }
+                    });
+            if let Err(e) = inserted {
+                tracing::error!("inserting timer: {e}");
+            }
+        }
+        for w in self.ctx.take_watches() {
+            match &mut self.watcher {
+                Some(watcher) => {
+                    if let Err(e) = watcher.watch_file(&w.path, w.callback) {
+                        tracing::error!("shell.watch_file({}): {e}", w.path.display());
+                    }
+                }
+                None => tracing::error!(
+                    "shell.watch_file({}): inotify unavailable",
+                    w.path.display()
+                ),
+            }
+        }
+        if self.ctx.take_dirty() {
+            shell.mark_all_dirty();
+        }
+        if self.ctx.take_quit() {
+            shell.quit();
+        }
     }
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
-    Ok(base
-        .map(|b| b.join("moonshell").join("init.lua"))
-        .filter(|p| p.is_file()))
+
+    /// Tear down the current config and re-exec it in a fresh VM. The
+    /// windows go first (their painters hold the old VM's last strong
+    /// `Lua` clones), then the ctx forgets the old VM's callbacks, then
+    /// the swap drops it. Armed timers self-clean on next fire. A
+    /// config error here logs and leaves the shell windowless — the
+    /// watcher is still running, the next save retries.
+    fn reload(&mut self, shell: &mut Shell) {
+        tracing::info!(config = %self.config.display(), "reloading config");
+        for id in self.windows.drain(..) {
+            shell.destroy_window(id);
+        }
+        if let Some(w) = &mut self.watcher {
+            w.clear_file_watches();
+        }
+        self.ctx.reset_for_reload();
+        match Vm::new().and_then(|vm| {
+            vm.install_shell(&self.ctx)?;
+            Ok(vm)
+        }) {
+            Ok(vm) => self.vm = vm, // old VM dropped here
+            Err(e) => {
+                tracing::error!("reload: VM boot failed: {e}");
+                return;
+            }
+        }
+        self.ctx.set_displays(shell.displays());
+        match std::fs::read_to_string(&self.config) {
+            Ok(code) => {
+                if let Err(e) = self.vm.exec(&code, &self.config.to_string_lossy()) {
+                    tracing::error!("reload: config error (fix and save to retry): {e}");
+                }
+            }
+            Err(e) => tracing::error!("reload: reading {}: {e}", self.config.display()),
+        }
+        // Queued windows/timers from the new exec drain in the caller.
+    }
 }
 
 /// mlua's error is `!Send + !Sync`; this is the one Lua→anyhow boundary.
@@ -185,6 +314,8 @@ fn main() -> anyhow::Result<()> {
     // Outputs are known (connect roundtrips) — snapshot them before the
     // config runs so top-level `shell.displays()` sees real geometry.
     ctx.set_displays(shell.displays());
+    // Boot-time errors fail hard (a broken config at startup should
+    // exit loudly); *reload*-time errors keep the process alive.
     vm.exec(&code, &path.to_string_lossy()).map_err(lua_err)?;
 
     // exec_async replies land on the loop thread through this channel;
@@ -205,49 +336,85 @@ fn main() -> anyhow::Result<()> {
         })
         .map_err(|e| anyhow::anyhow!("inserting exec channel: {e}"))?;
 
-    // One renderer for every window: the font system and glyph caches
-    // are the dominant allocation — shared, not per-window.
-    let renderer = Rc::new(RefCell::new(Renderer::new()));
-    let lua = vm.lua().clone();
-    let loop_handle = event_loop.handle();
-    let drain = move |shell: &mut Shell| {
-        // Snapshot in (displays), actions out (everything below).
-        ctx.set_displays(shell.displays());
-        for p in ctx.take_pending() {
-            let painter = LuaPainter::new(lua.clone(), p.shared, renderer.clone());
-            shell.create_window(p.options, Box::new(painter));
-        }
-        for t in ctx.take_timers() {
-            // Armed only because a shell.interval/once exists — the
-            // zero-idle-wakeup discipline. `fire` returning false means
-            // the VM is gone; the source removes itself.
-            let timer = Timer::from_duration(t.delay);
-            let inserted =
-                loop_handle.insert_source(timer, move |_, _, _shell: &mut Shell| {
-                    match (t.fire(), t.period) {
-                        (true, Some(period)) => TimeoutAction::ToDuration(period),
-                        _ => TimeoutAction::Drop,
-                    }
-                });
-            if let Err(e) = inserted {
-                tracing::error!("inserting timer: {e}");
-            }
-        }
-        if ctx.take_dirty() {
-            shell.mark_all_dirty();
-        }
-        if ctx.take_quit() {
-            shell.quit();
+    // The config-tree watch: inotify failure degrades to manual
+    // `shell.reload()` instead of killing the shell.
+    let config_root = path
+        .parent()
+        .map(PathBuf::from)
+        .context("config path has no parent directory")?;
+    let watcher = match Watcher::new(&config_root) {
+        Ok(w) => Some(w),
+        Err(e) => {
+            tracing::warn!("inotify unavailable ({e}) — hot reload and shell.watch_file disabled");
+            None
         }
     };
+    let watcher_fd = watcher.as_ref().map(|w| w.loop_fd()).transpose()?;
+
+    let engine = Rc::new(RefCell::new(Engine {
+        ctx,
+        vm,
+        // One renderer for every window: the font system and glyph
+        // caches are the dominant allocation — shared, not per-window.
+        renderer: Rc::new(RefCell::new(Renderer::new())),
+        config: path,
+        windows: Vec::new(),
+        watcher,
+        loop_handle: event_loop.handle(),
+        reload_scheduled: false,
+    }));
+
+    // Inotify readiness: drain events (fires watch_file callbacks
+    // inline), then debounce config changes into one reload request —
+    // the timer raises the ctx flag and the next tick does the swap.
+    if let Some(fd) = watcher_fd {
+        let eng = engine.clone();
+        event_loop
+            .handle()
+            .insert_source(
+                Generic::new(fd, Interest::READ, Mode::Level),
+                move |_, _, _shell: &mut Shell| {
+                    let mut e = eng.borrow_mut();
+                    let reload = match e.watcher.as_mut() {
+                        Some(w) => w.handle_events().unwrap_or_else(|err| {
+                            tracing::error!("inotify read: {err}");
+                            false
+                        }),
+                        None => false,
+                    };
+                    if reload && !e.reload_scheduled {
+                        e.reload_scheduled = true;
+                        let eng2 = eng.clone();
+                        let armed = e.loop_handle.insert_source(
+                            Timer::from_duration(RELOAD_DEBOUNCE),
+                            move |_, _, _shell: &mut Shell| {
+                                let mut e = eng2.borrow_mut();
+                                e.reload_scheduled = false;
+                                e.ctx.request_reload();
+                                TimeoutAction::Drop
+                            },
+                        );
+                        if let Err(err) = armed {
+                            tracing::error!("arming reload timer: {err}");
+                            e.reload_scheduled = false;
+                            e.ctx.request_reload(); // reload undebounced
+                        }
+                    }
+                    Ok(PostAction::Continue)
+                },
+            )
+            .map_err(|e| anyhow::anyhow!("inserting inotify source: {e}"))?;
+    }
+
     // Pre-run drain so the no-window warning is accurate; run_with
     // ticks again (idempotent — the queues are drained) before its
     // first dispatch, so a config-time `shell.quit()` exits cleanly.
-    drain(&mut shell);
+    engine.borrow_mut().tick(&mut shell);
     if shell.window_count() == 0 {
         tracing::warn!("config created no windows (shell.window was never called)");
     }
-    shell.run_with(event_loop, drain)?;
-    drop(vm); // outlives the loop: painters hold Lua clones
+    let eng = engine.clone();
+    shell.run_with(event_loop, move |shell| eng.borrow_mut().tick(shell))?;
+    drop(engine); // outlives the loop: painters hold Lua clones
     Ok(())
 }

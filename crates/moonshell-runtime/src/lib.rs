@@ -20,6 +20,7 @@ pub mod exec;
 pub mod painter;
 pub mod state;
 pub mod timer;
+pub mod watch;
 pub mod window;
 
 pub use api::{PendingWindow, ShellCtx};
@@ -28,6 +29,7 @@ pub use exec::ExecReply;
 pub use mlua;
 pub use painter::LuaPainter;
 pub use timer::PendingTimer;
+pub use watch::{PendingWatch, WatchCallback};
 
 /// The `ui.*` stdlib: pure-Lua element constructors, embedded at build
 /// time from the policy layer (`lua/` at the repo root, doctrine 01).

@@ -23,6 +23,9 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 # vendored: LuaJIT compiled into the binary — no system Lua, single
 # artifact. LuaJIT (not 5.4) is a locked decision: the FFI escape hatch.
 mlua = { version = "0.10", features = ["luajit", "vendored"] }
+# default features off: no tokio/futures "stream" machinery — the fd is
+# a calloop Generic source.
+inotify = { version = "0.11", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

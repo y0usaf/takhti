@@ -23,9 +23,13 @@
 //! - `shell.get_window(name) -> handle | nil` — named-window registry.
 //! - `shell.displays() -> {{name,x,y,width,height,scale,is_primary},…}`
 //!   — reads the output snapshot the binary refreshes each drain.
+//! - `shell.reload()` — raise the reload flag; the drain destroys the
+//!   Lua windows, drops the VM, and re-execs the config.
+//! - `shell.watch_file(path, fn)` — queue a [`PendingWatch`]; the
+//!   binary registers it with its inotify watcher.
 //!
-//! `shell.reload`/`watch_file` are M2 §5; `shell.clipboard_*` needs a
-//! data-control protocol and is deferred to M4 (tracked in PLAN.md).
+//! `shell.clipboard_*` needs a data-control protocol and is deferred
+//! to M4 (tracked in PLAN.md).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -37,6 +41,7 @@ use moonshell_surface::{DisplayInfo, LayerOptions};
 use crate::exec::{self, ExecCallback, ExecReply};
 use crate::state::LuaState;
 use crate::timer::PendingTimer;
+use crate::watch::{PendingWatch, WatchCallback};
 use crate::window::{self, WindowHandle, WindowShared};
 
 /// A `shell.window` call waiting for the binary to create the actual
@@ -55,10 +60,12 @@ pub struct PendingWindow {
 pub struct ShellCtx {
     pending: RefCell<Vec<PendingWindow>>,
     timers: RefCell<Vec<PendingTimer>>,
+    watches: RefCell<Vec<PendingWatch>>,
     named: RefCell<HashMap<String, Rc<RefCell<WindowShared>>>>,
     displays: RefCell<Vec<DisplayInfo>>,
     dirty: Cell<bool>,
     quit: Cell<bool>,
+    reload: Cell<bool>,
     exec_tx: calloop::channel::Sender<ExecReply>,
     exec_rx: RefCell<Option<calloop::channel::Channel<ExecReply>>>,
     /// In-flight `exec_async` callbacks by reply id — the `!Send` Lua
@@ -74,10 +81,12 @@ impl ShellCtx {
         Rc::new(Self {
             pending: RefCell::default(),
             timers: RefCell::default(),
+            watches: RefCell::default(),
             named: RefCell::default(),
             displays: RefCell::default(),
             dirty: Cell::new(false),
             quit: Cell::new(false),
+            reload: Cell::new(false),
             exec_tx,
             exec_rx: RefCell::new(Some(exec_rx)),
             exec_callbacks: RefCell::default(),
@@ -107,9 +116,41 @@ impl ShellCtx {
         self.timers.take()
     }
 
+    /// Drain queued file watches (the binary registers them with its
+    /// inotify watcher).
+    pub fn take_watches(&self) -> Vec<PendingWatch> {
+        self.watches.take()
+    }
+
     /// Take-and-clear the quit flag.
     pub fn take_quit(&self) -> bool {
         self.quit.replace(false)
+    }
+
+    /// Raise the reload flag from the Rust side — the config-tree
+    /// watcher's path into the same drain `shell.reload()` takes.
+    pub fn request_reload(&self) {
+        self.reload.set(true);
+    }
+
+    /// Take-and-clear the reload flag.
+    pub fn take_reload(&self) -> bool {
+        self.reload.replace(false)
+    }
+
+    /// Wipe everything belonging to the outgoing VM before a fresh one
+    /// boots: queued actions, the named-window registry, in-flight
+    /// exec callbacks, the dirty flag. The exec channel, the display
+    /// snapshot, and the quit flag survive — they belong to the loop,
+    /// not the VM. Armed calloop timers self-clean (their `WeakLua`
+    /// dies with the VM).
+    pub fn reset_for_reload(&self) {
+        self.pending.borrow_mut().clear();
+        self.timers.borrow_mut().clear();
+        self.watches.borrow_mut().clear();
+        self.named.borrow_mut().clear();
+        self.exec_callbacks.borrow_mut().clear();
+        self.dirty.set(false);
     }
 
     /// Refresh the snapshot `shell.displays()` reads. The binary calls
@@ -209,6 +250,27 @@ pub fn register_shell(lua: &Lua, ctx: &Rc<ShellCtx>) -> LuaResult<()> {
                 },
             );
             exec::spawn(cmd, id, c.exec_tx.clone());
+            Ok(())
+        })?,
+    )?;
+
+    let c = ctx.clone();
+    shell.set(
+        "watch_file",
+        lua.create_function(move |lua, (path, f): (String, LuaFunction)| {
+            c.watches.borrow_mut().push(PendingWatch {
+                path: path.into(),
+                callback: WatchCallback::new(lua, f)?,
+            });
+            Ok(())
+        })?,
+    )?;
+
+    let c = ctx.clone();
+    shell.set(
+        "reload",
+        lua.create_function(move |_lua, ()| {
+            c.reload.set(true);
             Ok(())
         })?,
     )?;
@@ -473,6 +535,53 @@ mod tests {
         assert_eq!(g.get::<i64>("width").unwrap(), 2560);
         assert_eq!(g.get::<i64>("scale").unwrap(), 2);
         assert!(g.get::<bool>("primary").unwrap());
+    }
+
+    #[test]
+    fn watch_file_queues_a_pending_watch() {
+        let (vm, ctx) = vm_with_shell();
+        vm.exec("shell.watch_file('/etc/hostname', function() end)", "t.lua")
+            .unwrap();
+        let watches = ctx.take_watches();
+        assert_eq!(watches.len(), 1);
+        assert_eq!(watches[0].path, std::path::Path::new("/etc/hostname"));
+        assert!(ctx.take_watches().is_empty());
+    }
+
+    #[test]
+    fn reload_raises_the_flag() {
+        let (vm, ctx) = vm_with_shell();
+        assert!(!ctx.take_reload());
+        vm.exec("shell.reload()", "t.lua").unwrap();
+        assert!(ctx.take_reload());
+        assert!(!ctx.take_reload());
+    }
+
+    #[test]
+    fn reset_for_reload_wipes_vm_state() {
+        let (vm, ctx) = vm_with_shell();
+        vm.exec(
+            r#"
+            shell.window({ name = "bar" })
+            shell.interval(1000, function() end)
+            shell.watch_file("x", function() end)
+            "#,
+            "t.lua",
+        )
+        .unwrap();
+        ctx.reset_for_reload();
+        assert!(ctx.take_pending().is_empty());
+        assert!(ctx.take_timers().is_empty());
+        assert!(ctx.take_watches().is_empty());
+        assert!(!ctx.take_dirty());
+        vm.exec("missing = shell.get_window('bar')", "t.lua")
+            .unwrap();
+        assert!(vm
+            .lua()
+            .globals()
+            .get::<LuaValue>("missing")
+            .unwrap()
+            .is_nil());
     }
 
     #[test]

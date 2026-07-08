@@ -41,8 +41,14 @@ channel), `shell.quit`, `shell.get_window` (named-window registry),
 `shell.displays` (snapshot fed from `surface::Shell::displays()`).
 Live on tomoe: all APIs verified by a self-checking config; **2.2 MB
 RSS idle, 0 voluntary ctx switches / 5 s (no timers); 6.6 MB with a
-1 s clock ticking**. Next open item: **M2 §5 — hot reload (inotify,
-fresh VM, `shell.reload`/`watch_file`)** (see the M2 breakdown below).
+1 s clock ticking**. §5 done (2026-07-08) — hot reload: one inotify
+instance (calloop `Generic` on a dup'd fd) watches the config tree;
+`.lua` changes debounce (100 ms) into a full VM swap; `shell.reload()`
+takes the same path by flag; `shell.watch_file` rides the same watcher.
+Live on tomoe: **7.3 MB RSS idle (release), 0 voluntary ctx
+switches / 5 s; 10 successive hot reloads → zero RSS growth**. Next
+open item: **M2 §6 — stdlib completion + acceptance** (see the M2
+breakdown below).
 
 Two working inputs exist:
 
@@ -284,11 +290,31 @@ M2 breakdown (the Lua runtime):
    surfaces — deferred to M4, recorded here. Measured live on tomoe:
    2.2 MB RSS idle + 0 voluntary ctx switches / 5 s (no timers),
    6.6 MB with a 1 s clock (glyph-cache growth from digits).
-5. [ ] hot reload: inotify (calloop source) on the config tree; on
-   change drop the `Vm`, destroy Lua-created windows, boot a fresh VM,
-   re-exec; `shell.reload()` does the same by hand. `shell.watch_file`
-   rides the same inotify source (nur's most-wanted feature, no
-   polling).
+5. [x] hot reload (2026-07-08): `watcher.rs` (binary) owns one inotify
+   instance (`inotify` 0.11, default-features off — no tokio/stream),
+   inserted as a calloop `Generic` on a *dup'd* fd so source teardown
+   order can't invalidate it. Config tree = every non-hidden dir under
+   the config file's parent (canonicalized in `resolve_config`), new
+   subdirs picked up from CREATE events, dir watches never removed
+   (bounded by distinct dirs ever seen — documented tradeoff). A
+   `.lua` change debounces (100 ms one-shot timer, throttle-style)
+   into `ctx.request_reload()`; the tick's reload destroys Lua-created
+   windows (tracked in `Engine.windows` — the old drain closure became
+   `Engine`, which owns the `Vm` so it can swap it), clears file
+   watches, `ctx.reset_for_reload()` (pending/timers/watches/named/
+   exec-callbacks/dirty; the exec channel, displays, quit survive —
+   they belong to the loop), then fresh VM + re-exec. *Boot*-time
+   config errors still fail hard; *reload*-time errors log and leave
+   the shell windowless with the watcher alive — the next save
+   retries (verified live: break → alive + error logged → fix →
+   recovers). `shell.reload()` raises the same flag; `shell.
+   watch_file(path, fn)` queues a `PendingWatch` (WeakLua callback,
+   timer discipline) that the drain registers — the watcher watches
+   the *parent dir* and matches by canonicalized full path, so the
+   editor rename-replace dance can't kill it. inotify init failure
+   degrades to manual `shell.reload()` with a warning. Measured live
+   on tomoe (release): 7.3 MB RSS idle, 0 voluntary ctx switches /
+   5 s, 10 successive reloads with zero RSS growth.
 6. [ ] stdlib completion + acceptance: port `theme.lua`/`utils.lua` +
    widget modules' `package.preload` registration; land `ui.bar_layout`
    and the theme-aware `shell.window` wrapper; Lua conventions doc in
@@ -367,6 +393,14 @@ tiny before the runtime landed on top.
   loop reordered (tick before dispatch), `shell.displays` needed
   roundtrips inside `Shell::connect`; audit new `shell.*` calls for
   the "top-level call, no loop yet" case
+- From M2 §5: never inotify-watch a file directly — editors save by
+  rename-replace and the watch dies with the old inode; watch the
+  parent dir and match events by canonicalized full path
+- From M2 §5: every calloop source sharing loop state via
+  `Rc<RefCell<Engine>>` is safe only because Lua callbacks touch
+  `ShellCtx` (a separate Rc), never `Engine` — a `shell.*` function
+  that reached back into `Engine` would re-borrow and panic; keep the
+  action-queue indirection when adding API
 - From M1 §3: shm buffers alternate, so a partial-damage frame must
   either fully repaint (current: correctness by determinism —
   over-reported damage is always safe) or track per-slot buffer age
