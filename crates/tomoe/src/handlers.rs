@@ -74,6 +74,8 @@ use smithay::wayland::image_copy_capture::{
 };
 use smithay::input::dnd::DndGrabHandler;
 
+use crate::backend::Backend;
+use crate::protocols::gamma_control::{GammaControlHandler, GammaControlManagerState};
 use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
 use crate::protocols::wlr_foreign_toplevel::{
     ForeignRequest, WlrForeignToplevelHandler, WlrForeignToplevelState,
@@ -1166,6 +1168,48 @@ impl ScreencopyHandler for Tomoe {
     }
 }
 crate::delegate_screencopy!(Tomoe);
+
+// ─── wlr-gamma-control ──────────────────────────────────────────────────────
+//
+// LUT programming lives in the tty backend (GAMMA_LUT property with a
+// legacy-ioctl fallback); winit has no gamma, so clients get `failed()`.
+
+impl GammaControlHandler for Tomoe {
+    fn gamma_control_manager_state(&mut self) -> &mut GammaControlManagerState {
+        &mut self.gamma_control_state
+    }
+
+    fn get_gamma_size(&mut self, output: &Output) -> Option<u32> {
+        let Backend::Tty(data) = &self.backend else {
+            return None;
+        };
+        match data.get_gamma_size(output) {
+            Ok(0) => None, // Setting gamma is not supported.
+            Ok(size) => Some(size),
+            Err(err) => {
+                warn!(
+                    "error getting gamma size for output {}: {err:#}",
+                    output.name()
+                );
+                None
+            }
+        }
+    }
+
+    fn set_gamma(&mut self, output: &Output, ramp: Option<Vec<u16>>) -> Option<()> {
+        let Backend::Tty(data) = &mut self.backend else {
+            return None;
+        };
+        match data.set_gamma(output, ramp) {
+            Ok(()) => Some(()),
+            Err(err) => {
+                warn!("error setting gamma for output {}: {err:#}", output.name());
+                None
+            }
+        }
+    }
+}
+crate::delegate_gamma_control!(Tomoe);
 
 // ─── ext-session-lock ─────────────────────────────────────────────────────────
 //

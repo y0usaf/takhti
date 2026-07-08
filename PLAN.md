@@ -291,7 +291,17 @@ Done and working:
       portal window capture) + wlr-foreign-toplevel-management v3
       (`protocols/wlr_foreign_toplevel.rs`, niri-shape but id-keyed and
       diff-based); every control request rides `on_window_request`
-- [ ] Gamma control / night light
+- [x] Gamma control / night light — wlr-gamma-control-unstable-v1
+      (`protocols/gamma_control.rs`, niri's implementation verbatim in
+      shape): one active control per output, every error path fails the
+      resource *and* resets the LUT so a crashed daemon never leaves the
+      screen tinted. LUT programming in the tty backend: atomic GAMMA_LUT
+      blobs (`GammaProps`, previous blob kept for VT-switch restore) with
+      the legacy gamma ioctl as fallback; gamma reset at connector
+      connect, `pending_gamma_change` stashed while the session is
+      inactive and applied/restored on `ActivateSession`; disconnect
+      sends `failed`. Winit reports no gamma support. Live check pending
+      (wlsunset/gammastep on a real session)
 - [ ] text-input + input-method (IME) — after core parity
 - [ ] Touch + tablet-v2 — deferred, no hardware pressure yet
 - [ ] Virtual keyboard — deferred
@@ -306,7 +316,10 @@ Items it pulls on:
       list + active, focused window title/app_id) — vocabulary only, no
       wire change: `wm.lua` broadcasts via `tomoe.ipc.broadcast`, core
       events (`focus_change`, `window_open/close`) already carry the
-      rest. Design lands with moonshell M3
+      rest. Design lands with moonshell M3. **WIP sits uncommitted in
+      `resources/wm.lua`** (2026-07-08, authored outside the session
+      flow): `wm_state` served method + broadcast after every workspace
+      mutation — review and commit it as its own change
 - [x] Window control surface for a taskbar (activate/close/minimize):
       landed as wlr-foreign-toplevel-management (M5 §1); equivalent
       `tomoe-ipc` methods can still come later if moonshell prefers the
@@ -613,10 +626,13 @@ setup. — All landed.*
    matters once launchers run as compositor spawns. Live check pending:
    a real notification-click focus (needs a daemon + client that redeem
    tokens; global + request path verified nested)
-3. Gamma control / night light
+3. ~~Gamma control / night light~~ done — wlr-gamma-control (mechanics in
+   the Ecosystem gap list above); night-light policy stays in the daemon
+   (wlsunset/gammastep), which can ship as a `tomoe.process.service`
+   entry in user config. Live check pending: wlsunset on a tty session
 
 *Accept: taskbar sees windows, activation focuses them, night light
-works.*
+works — all landed; live night-light run pending.*
 
 ### M6 — Phase 5: eye-candy
 

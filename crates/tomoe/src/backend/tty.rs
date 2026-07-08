@@ -10,7 +10,10 @@
 //! requests until its vblank.
 
 use std::collections::HashMap;
+use std::iter::zip;
 use std::mem;
+use std::num::NonZeroU64;
+use std::os::fd::AsFd;
 use std::path::Path;
 use std::time::Duration;
 
@@ -44,7 +47,8 @@ use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::{LoopHandle, RegistrationToken};
 use smithay::reexports::drm::control::{
-    connector, crtc, Mode as DrmMode, ModeFlags, ModeTypeFlags,
+    connector, crtc, property, Device as _, Mode as DrmMode, ModeFlags, ModeTypeFlags,
+    ResourceHandle,
 };
 use smithay::reexports::input::{
     self as libinput, DeviceCapability, DragLockState, Libinput, SendEventsMode,
@@ -143,6 +147,23 @@ pub struct TtySurface {
     /// flip. Gates the estimated-vblank bypass in `queue_redraw` and the
     /// edge-triggered tearing log.
     pub tearing_active: bool,
+    /// Atomic GAMMA_LUT handles for this crtc; None falls back to the
+    /// legacy gamma ioctl (`set_gamma_for_crtc`).
+    pub gamma_props: Option<GammaProps>,
+    /// Gamma change requested while the session was inactive (VT away);
+    /// applied on `ActivateSession`. Outer None = nothing pending,
+    /// inner None = reset to linear.
+    pub pending_gamma_change: Option<Option<Vec<u16>>>,
+}
+
+/// Atomic-API gamma: the crtc's GAMMA_LUT/GAMMA_LUT_SIZE properties plus
+/// the last blob we programmed, so a VT switch back can restore it
+/// (niri's `GammaProps`).
+pub struct GammaProps {
+    crtc: crtc::Handle,
+    gamma_lut: property::Handle,
+    gamma_lut_size: property::Handle,
+    previous_blob: Option<NonZeroU64>,
 }
 
 /// Dmabuf feedback pair for one output surface. `render` lists the primary
@@ -679,6 +700,21 @@ fn connector_connected(
         return Ok(false);
     }
 
+    // Gamma: prefer the atomic GAMMA_LUT property, fall back to the
+    // legacy ioctl; reset either way in case a previous compositor (or a
+    // crashed night-light daemon) left a LUT programmed.
+    let mut gamma_props = GammaProps::new(&device.drm, crtc)
+        .map_err(|err| debug!("couldn't get gamma properties: {err:#}"))
+        .ok();
+    let res = if let Some(gamma_props) = &mut gamma_props {
+        gamma_props.set_gamma(&device.drm, None)
+    } else {
+        set_gamma_for_crtc(&device.drm, crtc, None)
+    };
+    if let Err(err) = res {
+        debug!("couldn't reset gamma: {err:#}");
+    }
+
     let (mode, fallback) = pick_mode(&connector, lua.settings().resolution_for(&name))
         .context("connector has no modes")?;
     if fallback {
@@ -842,6 +878,8 @@ fn connector_connected(
             direct_scanout: false,
             supports_async_flip,
             tearing_active: false,
+            gamma_props,
+            pending_gamma_change: None,
         },
     );
     Ok(true)
@@ -854,6 +892,7 @@ fn connector_disconnected(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) 
         display_handle,
         loop_handle,
         screencopy_state,
+        gamma_control_state,
         ..
     } = tomoe;
     let Backend::Tty(data) = backend else { return };
@@ -880,6 +919,8 @@ fn connector_disconnected(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) 
     display_handle.remove_global::<Tomoe>(surface.global);
     // Queued screencopies for this output can never complete; fail them now.
     screencopy_state.remove_output(&surface.output);
+    // Fail the output's gamma control so the daemon re-acquires on replug.
+    gamma_control_state.output_removed(&surface.output);
 }
 
 /// Pure placement policy: `(name, physical size)` in connect order plus the
@@ -1730,6 +1771,252 @@ pub fn import_dmabuf(data: &mut TtyData, dmabuf: &Dmabuf) -> bool {
     }
 }
 
+impl TtyData {
+    fn surface_for_output(
+        &self,
+        output: &Output,
+    ) -> Option<(&OutputDevice, crtc::Handle, &TtySurface)> {
+        self.devices.values().find_map(|device| {
+            device
+                .surfaces
+                .iter()
+                .find(|(_, surface)| surface.output == *output)
+                .map(|(crtc, surface)| (device, *crtc, surface))
+        })
+    }
+
+    /// Ramp size per channel for the output's crtc; 0 means unsupported.
+    pub fn get_gamma_size(&self, output: &Output) -> Result<u32> {
+        let (device, crtc, surface) = self
+            .surface_for_output(output)
+            .context("missing surface for output")?;
+        if let Some(gamma_props) = &surface.gamma_props {
+            gamma_props.gamma_size(&device.drm)
+        } else {
+            let info = device
+                .drm
+                .get_crtc(crtc)
+                .context("error getting crtc info")?;
+            Ok(info.gamma_length())
+        }
+    }
+
+    /// Program (Some) or reset (None) the output's gamma LUT. While the
+    /// session is inactive (VT away) the change is stashed and applied on
+    /// `ActivateSession` — properties can't change on a paused device.
+    pub fn set_gamma(&mut self, output: &Output, ramp: Option<Vec<u16>>) -> Result<()> {
+        let session_active = self.session.is_active();
+        for device in self.devices.values_mut() {
+            let Some((crtc, surface)) = device
+                .surfaces
+                .iter_mut()
+                .find(|(_, surface)| surface.output == *output)
+            else {
+                continue;
+            };
+
+            if !session_active {
+                surface.pending_gamma_change = Some(ramp);
+                return Ok(());
+            }
+
+            let ramp = ramp.as_deref();
+            return if let Some(gamma_props) = &mut surface.gamma_props {
+                gamma_props.set_gamma(&device.drm, ramp)
+            } else {
+                set_gamma_for_crtc(&device.drm, *crtc, ramp)
+            };
+        }
+        bail!("missing surface for output");
+    }
+}
+
+impl GammaProps {
+    fn new(device: &DrmDevice, crtc: crtc::Handle) -> Result<Self> {
+        let mut gamma_lut = None;
+        let mut gamma_lut_size = None;
+
+        let props = device
+            .get_properties(crtc)
+            .context("error getting properties")?;
+        for (prop, _) in props {
+            let Ok(info) = device.get_property(prop) else {
+                continue;
+            };
+            let Ok(name) = info.name().to_str() else {
+                continue;
+            };
+            match name {
+                "GAMMA_LUT" => {
+                    ensure!(
+                        matches!(info.value_type(), property::ValueType::Blob),
+                        "wrong GAMMA_LUT value type"
+                    );
+                    gamma_lut = Some(prop);
+                }
+                "GAMMA_LUT_SIZE" => {
+                    ensure!(
+                        matches!(info.value_type(), property::ValueType::UnsignedRange(_, _)),
+                        "wrong GAMMA_LUT_SIZE value type"
+                    );
+                    gamma_lut_size = Some(prop);
+                }
+                _ => (),
+            }
+        }
+
+        let gamma_lut = gamma_lut.context("missing GAMMA_LUT property")?;
+        let gamma_lut_size = gamma_lut_size.context("missing GAMMA_LUT_SIZE property")?;
+
+        Ok(Self {
+            crtc,
+            gamma_lut,
+            gamma_lut_size,
+            previous_blob: None,
+        })
+    }
+
+    fn gamma_size(&self, device: &DrmDevice) -> Result<u32> {
+        let value = get_drm_property(device, self.crtc, self.gamma_lut_size)
+            .context("missing GAMMA_LUT_SIZE property")?;
+        Ok(value as u32)
+    }
+
+    fn set_gamma(&mut self, device: &DrmDevice, gamma: Option<&[u16]>) -> Result<()> {
+        let blob = if let Some(gamma) = gamma {
+            let gamma_size = self
+                .gamma_size(device)
+                .context("error getting gamma size")? as usize;
+
+            ensure!(gamma.len() == gamma_size * 3, "wrong gamma length");
+
+            // The protocol carries three channel-planar ramps; the kernel
+            // wants an interleaved array of drm_color_lut.
+            #[allow(non_camel_case_types)]
+            #[repr(C)]
+            #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+            struct drm_color_lut {
+                red: u16,
+                green: u16,
+                blue: u16,
+                reserved: u16,
+            }
+
+            let (red, rest) = gamma.split_at(gamma_size);
+            let (green, blue) = rest.split_at(gamma_size);
+            let mut data = zip(zip(red, green), blue)
+                .map(|((&red, &green), &blue)| drm_color_lut {
+                    red,
+                    green,
+                    blue,
+                    reserved: 0,
+                })
+                .collect::<Vec<_>>();
+            let data = bytemuck::cast_slice_mut(&mut data);
+
+            let blob = drm_ffi::mode::create_property_blob(device.as_fd(), data)
+                .context("error creating property blob")?;
+            NonZeroU64::new(u64::from(blob.blob_id))
+        } else {
+            None
+        };
+
+        {
+            let blob_id = blob.map(NonZeroU64::get).unwrap_or(0);
+            device
+                .set_property(
+                    self.crtc,
+                    self.gamma_lut,
+                    property::Value::Blob(blob_id).into(),
+                )
+                .context("error setting GAMMA_LUT")
+                .inspect_err(|_| {
+                    if blob_id != 0 {
+                        // Destroy the blob we just allocated.
+                        if let Err(err) = device.destroy_property_blob(blob_id) {
+                            warn!("error destroying GAMMA_LUT property blob: {err:?}");
+                        }
+                    }
+                })?;
+        }
+
+        if let Some(blob) = mem::replace(&mut self.previous_blob, blob) {
+            if let Err(err) = device.destroy_property_blob(blob.get()) {
+                warn!("error destroying previous GAMMA_LUT blob: {err:?}");
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Re-program the LUT we last set — for VT switch back, where the other
+    /// session may have changed it.
+    fn restore_gamma(&self, device: &DrmDevice) -> Result<()> {
+        let blob = self.previous_blob.map(NonZeroU64::get).unwrap_or(0);
+        device
+            .set_property(
+                self.crtc,
+                self.gamma_lut,
+                property::Value::Blob(blob).into(),
+            )
+            .context("error setting GAMMA_LUT")?;
+        Ok(())
+    }
+}
+
+/// Legacy (non-atomic) gamma ioctl fallback for crtcs without GAMMA_LUT.
+fn set_gamma_for_crtc(device: &DrmDevice, crtc: crtc::Handle, ramp: Option<&[u16]>) -> Result<()> {
+    let info = device.get_crtc(crtc).context("error getting crtc info")?;
+    let gamma_length = info.gamma_length() as usize;
+
+    ensure!(gamma_length != 0, "setting gamma is not supported");
+
+    let mut temp;
+    let ramp = if let Some(ramp) = ramp {
+        ensure!(ramp.len() == gamma_length * 3, "wrong gamma length");
+        ramp
+    } else {
+        // The legacy API provides no way to reset the gamma, so set a
+        // linear one manually.
+        temp = vec![0u16; gamma_length * 3];
+        let (red, rest) = temp.split_at_mut(gamma_length);
+        let (green, blue) = rest.split_at_mut(gamma_length);
+        let denom = gamma_length as u64 - 1;
+        for (i, ((r, g), b)) in zip(zip(red, green), blue).enumerate() {
+            let value = (0xFFFFu64 * i as u64 / denom) as u16;
+            *r = value;
+            *g = value;
+            *b = value;
+        }
+        &temp
+    };
+
+    let (red, rest) = ramp.split_at(gamma_length);
+    let (green, blue) = rest.split_at(gamma_length);
+    device
+        .set_gamma(crtc, red, green, blue)
+        .context("error setting legacy gamma")?;
+    Ok(())
+}
+
+fn get_drm_property(
+    drm: &DrmDevice,
+    resource: impl ResourceHandle,
+    prop: property::Handle,
+) -> Option<property::RawValue> {
+    let props = match drm.get_properties(resource) {
+        Ok(props) => props,
+        Err(err) => {
+            warn!("error getting properties: {err:?}");
+            return None;
+        }
+    };
+
+    props
+        .into_iter()
+        .find_map(|(handle, value)| (handle == prop).then_some(value))
+}
+
 /// NVIDIA block-linear modifiers with framebuffer compression (bits 25:23).
 /// The kernel advertises them as plane-capable but the driver rejects the
 /// actual flip, so clients allocating them flap between direct scanout and
@@ -1928,6 +2215,23 @@ impl Tomoe {
                                 self.loop_handle.remove(token);
                             }
                             _ => {}
+                        }
+                        // Apply the gamma change requested while away, or
+                        // restore our own LUT (the other VT clobbered it).
+                        if let Some(ramp) = surface.pending_gamma_change.take() {
+                            let ramp = ramp.as_deref();
+                            let res = if let Some(gamma_props) = &mut surface.gamma_props {
+                                gamma_props.set_gamma(&device.drm, ramp)
+                            } else {
+                                set_gamma_for_crtc(&device.drm, *crtc, ramp)
+                            };
+                            if let Err(err) = res {
+                                warn!("error applying pending gamma change: {err:#}");
+                            }
+                        } else if let Some(gamma_props) = &surface.gamma_props {
+                            if let Err(err) = gamma_props.restore_gamma(&device.drm) {
+                                warn!("error restoring gamma: {err:#}");
+                            }
                         }
                         targets.push((*node, *crtc));
                     }

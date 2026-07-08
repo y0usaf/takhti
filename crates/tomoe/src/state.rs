@@ -153,6 +153,9 @@ pub struct Tomoe {
     pub syncobj_state: Option<DrmSyncobjState>,
     /// wlr-screencopy: per-manager frame queues (grim, xdg-desktop-portal-wlr).
     pub screencopy_state: crate::protocols::screencopy::ScreencopyManagerState,
+    /// wlr-gamma-control: night-light daemons (wlsunset/gammastep); one
+    /// active control per output, LUTs programmed by the tty backend.
+    pub gamma_control_state: crate::protocols::gamma_control::GammaControlManagerState,
     /// Held to keep the ext-image-capture-source dispatch alive.
     #[allow(dead_code)]
     pub image_capture_source_state: ImageCaptureSourceState,
@@ -289,6 +292,10 @@ impl Tomoe {
         // the tty backend consults on the fullscreen flip path. No state to
         // keep — the display owns the global, the hints live in surface data.
         crate::protocols::tearing_control::TearingControlManagerState::new::<Self>(&display_handle);
+        let gamma_control_state = crate::protocols::gamma_control::GammaControlManagerState::new::<
+            Self,
+            _,
+        >(&display_handle, |_| true);
         let image_capture_source_state = ImageCaptureSourceState::new();
         let output_capture_source_state = OutputCaptureSourceState::new::<Self>(&display_handle);
         let toplevel_capture_source_state =
@@ -367,6 +374,7 @@ impl Tomoe {
             dmabuf_state,
             syncobj_state: None,
             screencopy_state,
+            gamma_control_state,
             image_capture_source_state,
             output_capture_source_state,
             toplevel_capture_source_state,

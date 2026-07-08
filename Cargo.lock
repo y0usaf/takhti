@@ -2602,7 +2602,9 @@ name = "tomoe"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytemuck",
  "clap",
+ "drm-ffi",
  "fontdue",
  "jiff",
  "mlua",

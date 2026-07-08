@@ -40,6 +40,7 @@ crate tomoe
 ├── mod backend: pub(crate)
 │   ├── enum Backend: pub
 │   ├── mod tty: pub
+│   │   ├── struct GammaProps: pub
 │   │   ├── type GbmDrmCompositor: pub
 │   │   ├── struct OutputDevice: pub
 │   │   ├── enum RedrawState: pub
@@ -115,6 +116,11 @@ crate tomoe
 │   ├── enum RunPolicy: pub
 │   └── struct Service: pub(self)
 ├── mod protocols: pub(crate)
+│   ├── mod gamma_control: pub
+│   │   ├── trait GammaControlHandler: pub
+│   │   ├── struct GammaControlManagerGlobalData: pub
+│   │   ├── struct GammaControlManagerState: pub
+│   │   └── struct GammaControlState: pub
 │   ├── mod screencopy: pub
 │   │   ├── struct Screencopy: pub
 │   │   ├── enum ScreencopyBuffer: pub
