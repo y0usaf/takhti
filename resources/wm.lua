@@ -52,6 +52,29 @@ local function remove(list, win)
   end
 end
 
+-- ── Bar-facing IPC (the moonshell vocabulary; PLAN.md "moonshell-driven") ──
+-- Workspace state is policy, so it rides the *user* event vocabulary — the
+-- wire crate stays frozen (doctrine 03). `wm_state` is both a served method
+-- (a bar's initial fetch) and a broadcast event (fired after every workspace
+-- mutation). Payload shape, kept mechanical so any bar can consume it:
+--   { active = n, workspaces = { { id = i, windows = count }, ... } }
+-- Which workspaces to *display* (all, occupied-only, …) is the bar's policy;
+-- all of them are reported, with counts.
+
+local function wm_state()
+  local ws = {}
+  for i = 1, M.workspace_count do
+    ws[i] = { id = i, windows = #M.workspaces[i] }
+  end
+  return { active = M.active, workspaces = ws }
+end
+
+local function announce()
+  tomoe.ipc.broadcast("wm_state", wm_state())
+end
+
+tomoe.ipc.serve("wm_state", wm_state)
+
 ---Retile the active workspace (classic dwindle: split the remaining area
 ---along its longer side). Fullscreen windows keep their output-covering
 ---geometry and stay on top.
@@ -152,6 +175,7 @@ function M.switch(n)
   end
   M.active = n
   M.arrange()
+  announce()
   local last = M.workspaces[n][#M.workspaces[n]]
   if last then
     last:focus()
@@ -175,6 +199,7 @@ function M.move_focused(n)
   win:hide()
   table.insert(M.workspaces[n], win)
   M.arrange()
+  announce()
   local last = M.workspaces[M.active][#M.workspaces[M.active]]
   if last then
     last:focus()
@@ -222,6 +247,7 @@ tomoe.on_window_open(function(win)
     end
   end
   table.insert(M.workspaces[target], win)
+  announce()
   if target ~= M.active then
     -- Ruled onto another workspace: keep it hidden, don't steal focus.
     win:hide()
@@ -245,6 +271,7 @@ tomoe.on_window_close(function(win)
     remove(M.workspaces[i], win)
   end
   M.arrange()
+  announce()
   local last = M.workspaces[M.active][#M.workspaces[M.active]]
   if last then
     last:focus()
@@ -330,6 +357,8 @@ end, function(state)
     end
   end
   M.arrange()
+  -- Resync any connected bars: their wm_state snapshot predates the reload.
+  announce()
 end)
 
 return M

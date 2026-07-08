@@ -312,14 +312,20 @@ moonshell (`~/Dev/moonshell`, its PLAN.md "Interconnection tracker" is
 the mirror of this list) is the first external `tomoe-ipc` consumer.
 Items it pulls on:
 
-- [ ] Workspace/window event vocabulary sufficient for a bar (workspace
-      list + active, focused window title/app_id) — vocabulary only, no
-      wire change: `wm.lua` broadcasts via `tomoe.ipc.broadcast`, core
-      events (`focus_change`, `window_open/close`) already carry the
-      rest. Design lands with moonshell M3. **WIP sits uncommitted in
-      `resources/wm.lua`** (2026-07-08, authored outside the session
-      flow): `wm_state` served method + broadcast after every workspace
-      mutation — review and commit it as its own change
+- [x] Workspace/window event vocabulary sufficient for a bar — landed
+      2026-07-08 with moonshell M3 §1, vocabulary only, zero wire
+      change (doctrine 03's wire/vocabulary split, first real test):
+      `wm.lua` serves **`wm_state`** (a bar's initial fetch) and
+      broadcasts it after every workspace mutation (switch,
+      move_focused, open/close, reload-restore). Payload:
+      `{ active = n, workspaces = { { id, windows = count }, … } }` —
+      all workspaces reported, display policy stays in the bar.
+      Focused title rides core events (`windows` + `window_open/close`
+      + `focus_change`). Verified live against moonshell's tomoe
+      backend (nested winit instance). Known gap: no core event for
+      *title changes* after open — a bar's focused-window title can go
+      stale; add a `window_props_changed`-style core event when it
+      itches
 - [x] Window control surface for a taskbar (activate/close/minimize):
       landed as wlr-foreign-toplevel-management (M5 §1); equivalent
       `tomoe-ipc` methods can still come later if moonshell prefers the
