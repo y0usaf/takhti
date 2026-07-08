@@ -19,7 +19,10 @@ the doctrine-06 `boot` check (headless sway + `moonshell --boot-check`
 gate (budget 20 MB); 0 voluntary ctx switches over 5 s idle** (powertop
 unavailable — ctx-switch delta is the standing wakeup proxy); output
 disable/enable under headless sway survives (unmap → wait → remap).
-Next open item: **M1 element vocabulary**.
+
+**M1 in progress**: §1 (element vocabulary + flex-lite layout + draw
+pass) landed 2026-07-08 — see the M1 breakdown below. Next open item:
+**M1 §2 icon/image elements**.
 
 Two working inputs exist:
 
@@ -121,9 +124,26 @@ M0 → M6 as in DESIGN.md. M0 breakdown (the doctrine-06 spike):
    gate), 0 voluntary ctx switches over 5 s idle. powertop/smem not
    installed — /proc VmRSS + ctx-switch delta are the standing proxies.
 
-Then M1 element vocabulary, then M2 brings Lua in. Nothing Lua-shaped
-gets built in M0/M1 — the render core must be provably tiny before the
-runtime lands on top.
+M1 breakdown (element vocabulary; all in `render`, no Lua):
+
+1. [x] Element tree + flex-lite layout + draw pass (2026-07-08):
+   `element.rs` (HBox/VBox/Stack/Text/Spacer/Separator/Progress/
+   CircularProgress — every variant carries a uniform `Style`; doctrine
+   05 shape documented in the module header), `layout.rs` (measure +
+   place: flex-grow semantics, gap/padding/justify/align, logical→
+   physical scale multiplied exactly once), `draw.rs` (lockstep walk,
+   edge-rounding to integer px, rounded rects + bezier arcs in the
+   Renderer). Bare binary renders its version bar through the tree —
+   the doctrine-06 artifact now exercises the M1 path.
+2. [ ] `icon` (SVG via resvg) + `image` elements — new deps; decode/
+   rasterize cached, never per-paint.
+3. [ ] Per-element damage diffing: cache the previous layout tree +
+   element tree, diff, emit `Damage::Rects` instead of `Damage::Full`.
+4. [ ] Accept: nur `examples/simple-bar` element tree as a static Rust
+   table renders visually ≡ nur-on-GPUI; re-measure RSS, record here.
+
+Then M2 brings Lua in. Nothing Lua-shaped gets built in M0/M1 — the
+render core must be provably tiny before the runtime lands on top.
 
 ## Standing lessons (imported)
 
@@ -147,3 +167,8 @@ runtime lands on top.
   the create/close loop storms (~150k remaps/s observed). Remap only if
   the old surface was ever configured and an output exists; otherwise
   wait for `new_output`
+- From M1 §1: round layout rect *edges* (x0/x1), not (x, w) — rounding
+  width opens one-pixel seams between adjacent children. Text is
+  measured with the same `shape()` the draw pass uses, so layout and
+  paint can never disagree about advance width. Layout stays f32;
+  integer conversion happens once, in `draw.rs`

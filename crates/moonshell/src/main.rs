@@ -4,18 +4,49 @@
 //! right after the first frame is committed, which is what
 //! `nix flake check` runs under a headless compositor.
 
-use moonshell_render::{Renderer, Rgba};
+use moonshell_render::element::{Align, Edges, Flex, Spacer, Style, Text};
+use moonshell_render::{Element, Renderer, Rgba};
 use moonshell_surface::{Canvas, Damage, LayerOptions, Painter};
 
 const BG: Rgba = Rgba::new(0x14, 0x14, 0x1e, 0xff);
 const FG: Rgba = Rgba::new(0xc8, 0xc8, 0xd8, 0xff);
-/// Logical font size; scaled to physical inside paint.
-const FONT_LOGICAL: f32 = 13.0;
-const PAD_LOGICAL: i32 = 8;
 
 struct VersionBar {
     renderer: Renderer,
-    label: String,
+    root: Element,
+}
+
+impl VersionBar {
+    fn new(label: String) -> Self {
+        // The bare tree: bg + padding + a centered version string —
+        // exercises the M1 element/layout/draw path with zero policy.
+        let root = Element::HBox(Flex {
+            style: Style {
+                bg: Some(BG),
+                ..Style::default()
+            },
+            padding: Edges {
+                left: 8.0,
+                right: 8.0,
+                ..Edges::default()
+            },
+            align: Align::Center,
+            children: vec![
+                Element::Text(Text {
+                    content: label,
+                    size: 13.0,
+                    color: FG,
+                    ..Text::default()
+                }),
+                Element::Spacer(Spacer::default()),
+            ],
+            ..Flex::default()
+        });
+        Self {
+            renderer: Renderer::new(),
+            root,
+        }
+    }
 }
 
 impl Painter for VersionBar {
@@ -26,13 +57,14 @@ impl Painter for VersionBar {
             height,
             scale,
         } = canvas;
-        self.renderer.clear(buf, width, height, BG);
-        let font_px = FONT_LOGICAL * scale as f32;
-        let line_px = (font_px * 1.3).ceil();
-        let x = PAD_LOGICAL * scale;
-        let y = ((height as f32 - line_px) / 2.0).round() as i32;
-        self.renderer
-            .text_line(buf, width, height, x, y, &self.label, font_px, line_px, FG);
+        moonshell_render::render_tree(
+            &mut self.renderer,
+            buf,
+            width,
+            height,
+            scale as f32,
+            &self.root,
+        );
         Damage::Full
     }
 }
@@ -61,10 +93,7 @@ fn main() -> anyhow::Result<()> {
         exit_after_first_draw: boot_check,
         ..LayerOptions::default()
     };
-    let painter = VersionBar {
-        renderer: Renderer::new(),
-        label: format!("moonshell {}", env!("CARGO_PKG_VERSION")),
-    };
+    let painter = VersionBar::new(format!("moonshell {}", env!("CARGO_PKG_VERSION")));
     moonshell_surface::run(options, Box::new(painter))?;
     Ok(())
 }
