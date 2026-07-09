@@ -532,6 +532,7 @@ function ScreencastRequest:defer() end
 ---@field enabled boolean # enable layer blur (default false)
 ---@field passes integer # down/up sample passes, clamped to 1..31 (default 3)
 ---@field offset number # finite non-negative kernel offset (default 1.0)
+---@field anti_artifact_margin integer # source sampling halo in physical pixels (default 96)
 ---@field layer_namespaces string[] # exact layer-shell namespace allow-list
 
 ---Rounded window drop shadow (`settings.shadow`); fullscreen windows never

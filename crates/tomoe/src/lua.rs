@@ -232,6 +232,8 @@ pub struct BlurSettings {
     pub enabled: bool,
     pub passes: u8,
     pub offset: f64,
+    /// Sampling halo used for source-damage invalidation, in physical pixels.
+    pub anti_artifact_margin: i32,
     pub layer_namespaces: Vec<String>,
 }
 
@@ -241,6 +243,7 @@ impl Default for BlurSettings {
             enabled: false,
             passes: 3,
             offset: 1.0,
+            anti_artifact_margin: 96,
             layer_namespaces: Vec::new(),
         }
     }
@@ -1407,6 +1410,9 @@ impl LuaRuntime {
                         } else {
                             warn!("invalid blur.offset {offset:?}; expected a finite value >= 0");
                         }
+                    }
+                    if let Ok(margin) = blur.get::<i32>("anti_artifact_margin") {
+                        settings.blur.anti_artifact_margin = margin.max(0);
                     }
                     if let Ok(namespaces) = blur.get::<Table>("layer_namespaces") {
                         settings.blur.layer_namespaces = namespaces

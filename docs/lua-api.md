@@ -307,6 +307,7 @@ Dual-kawase blur behind rectangular layer-shell surfaces whose namespace is list
 - `enabled: boolean` — enable layer blur (default false)
 - `passes: integer` — down/up sample passes, clamped to 1..31 (default 3)
 - `offset: number` — finite non-negative kernel offset (default 1.0)
+- `anti_artifact_margin: integer` — source sampling halo in physical pixels (default 96)
 - `layer_namespaces: string[]` — exact layer-shell namespace allow-list
 
 ### Shadow

@@ -331,9 +331,11 @@ fn layer_elements<R: TomoeRenderer>(
                     .any(|name| name == layer.namespace())
             {
                 let effect = effects.entry(layer.wl_surface().clone()).or_default();
-                elements.push(OutputRenderElements::FramebufferEffect(
-                    effect.render(physical, options),
-                ));
+                elements.push(OutputRenderElements::FramebufferEffect(effect.render(
+                    physical,
+                    options,
+                    blur.anti_artifact_margin,
+                )));
             }
         }
     }

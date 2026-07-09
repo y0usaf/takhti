@@ -725,9 +725,13 @@ works — all landed; live night-light run pending.*
 4. [in progress] Dual-kawase blur incl. blur-behind for layer surfaces.
    - [x] First slice: cached dual-kawase framebuffer effect, physical rectangular
      layer-shell blur selected by exact namespace through `settings.blur`, shared
-     by GLES/TTY/output capture. Full source-damage-box invalidation, blur regions,
-     rounded masks, and window blur remain; nested + TTY visual checks pending.
-     (`ref/ShojiWM/knowledges/effect-invalidation.md` re-read.)
+     by GLES/TTY/output capture.
+   - [x] Second slice: the framebuffer effect's physical source box now includes
+     an explicit `anti_artifact_margin` sampling halo (96 physical pixels by
+     default), so Smithay invalidates and recaptures it for adjacent source
+     damage; the expanded capture is cropped back to the requested rectangle.
+     Blur regions, rounded masks, and window blur remain; nested + TTY visual
+     checks pending. (`ref/ShojiWM/knowledges/effect-invalidation.md` re-read.)
 
 *Accept: side-by-side with Hyprland defaults, no visible fidelity gap;
 UFO test still flat at high refresh with animations running.*
