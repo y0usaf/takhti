@@ -101,6 +101,14 @@ function Window:is_maximized() end
 ---@param h integer
 function Window:set_geometry(x, y, w, h) end
 
+---Replace this window's rendering/presentation overrides. Omitted fields fall
+---back to global settings; pass an empty table to clear all overrides. A true
+---tearing override also grants tearing to clients (notably XWayland) that
+---cannot send wp_tearing_control hints; fullscreen and hardware support still
+---gate the async flip.
+---@param properties WindowProperties
+function Window:set_properties(properties) end
+
 ---Show the window (map it on screen).
 function Window:show() end
 
@@ -350,6 +358,15 @@ function UiWidget:close() end
 -- ─── Types ────────────────────────────────────────────────────────────────────
 
 ---A rectangle in integer physical pixels, world coordinates.
+---@class WindowProperties
+---@field radius integer? # corner radius in physical pixels
+---@field tearing boolean? # per-window grant/denial; true does not require a client hint
+---@field border WindowBorder? # focused/unfocused color overrides
+
+---@class WindowBorder
+---@field focused string? # "#rrggbb" or "#rrggbbaa"
+---@field unfocused string? # "#rrggbb" or "#rrggbbaa"
+
 ---@class Geometry
 ---@field x integer
 ---@field y integer

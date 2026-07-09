@@ -10,13 +10,12 @@ impl Tomoe {
     pub fn refresh_borders(&mut self) {
         let settings = self.lua.settings();
         let width = settings.border_width.max(0);
-        let radius = settings.corner_radius.max(0);
+        let global_radius = settings.corner_radius.max(0);
         let focused = self.focused_window();
-        // Corner radius is a shader uniform — invisible to damage tracking —
-        // so a changed setting bumps every window's damage-injection element
-        // exactly once (rendered by scene_elements when rounding is on).
-        if radius != self.applied_corner_radius {
-            self.applied_corner_radius = radius;
+        // Global radius changes affect windows without an override. Per-window
+        // changes are damaged when their queued op is applied.
+        if global_radius != self.applied_corner_radius {
+            self.applied_corner_radius = global_radius;
             for damage in self.corner_damage.values_mut() {
                 damage.damage_all();
             }
@@ -26,10 +25,20 @@ impl Tomoe {
             let Some(geo) = self.space.element_geometry(&window) else {
                 continue;
             };
+            let props = self
+                .window_properties
+                .iter()
+                .find_map(|(id, props)| (self.windows.get(id) == Some(&window)).then_some(props));
+            let radius = props.and_then(|p| p.radius).unwrap_or(global_radius);
+            self.window_radii.insert(window.clone(), radius);
             let color = if Some(&window) == focused.as_ref() {
-                settings.border_focused
+                props
+                    .and_then(|p| p.border_focused)
+                    .unwrap_or(settings.border_focused)
             } else {
-                settings.border_unfocused
+                props
+                    .and_then(|p| p.border_unfocused)
+                    .unwrap_or(settings.border_unfocused)
             };
             self.corner_damage.entry(window.clone()).or_default();
             let size = (geo.size.w + 2 * width, geo.size.h + 2 * width).into();

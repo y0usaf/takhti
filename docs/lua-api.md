@@ -36,6 +36,7 @@ A toplevel window. Reads reflect the snapshot taken before this Lua entry; write
 - `Window:is_fullscreen() -> boolean` — xdg fullscreen state the client last acked — what the window *is*; pending requests arrive via on_window_request.
 - `Window:is_maximized() -> boolean` — xdg maximized state the client last acked.
 - `Window:set_geometry(x, y, w, h)` — Move/resize (w and h are clamped to ≥ 1).
+- `Window:set_properties(properties)` — Replace this window's rendering/presentation overrides. Omitted fields fall back to global settings; pass an empty table to clear all overrides. A true tearing override also grants tearing to clients (notably XWayland) that cannot send wp_tearing_control hints; fullscreen and hardware support still gate the async flip.
 - `Window:show()` — Show the window (map it on screen).
 - `Window:hide()` — Hide the window without closing it (e.g. other workspaces).
 - `Window:focus()` — Give the window keyboard focus.
@@ -123,9 +124,20 @@ Handle returned by the tomoe.ui constructors. Widgets close themselves when they
 
 ## Types
 
-### Geometry
+### WindowProperties
 
 A rectangle in integer physical pixels, world coordinates.
+
+- `radius: integer?` — corner radius in physical pixels
+- `tearing: boolean?` — per-window grant/denial; true does not require a client hint
+- `border: WindowBorder?` — focused/unfocused color overrides
+
+### WindowBorder
+
+- `focused: string?` — "#rrggbb" or "#rrggbbaa"
+- `unfocused: string?` — "#rrggbb" or "#rrggbbaa"
+
+### Geometry
 
 - `x: integer`
 - `y: integer`

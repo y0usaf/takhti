@@ -1521,12 +1521,11 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
 
     let locked = tomoe.is_locked();
 
-    // Tearing candidate: a fullscreen window on this output whose client
-    // hinted that async flips are acceptable (wp_tearing_control), gated by
-    // settings.tearing. TOMOE_FORCE_TEARING=1 skips the hint — X11 games
-    // through xwayland-satellite can't send one (testing aid until window
-    // rules can grant tearing per app).
-    let tearing_candidate = !locked && (tomoe.lua.settings().tearing || force_tearing()) && {
+    // Tearing candidate: a fullscreen window on this output, gated by the
+    // global setting or its per-window override. `tearing = true` on a window
+    // also grants hint-less XWayland clients; false explicitly denies. The
+    // force env remains a hardware/debug escape hatch.
+    let tearing_candidate = !locked && {
         let output_rect = smithay::utils::Rectangle::new(output_loc, output_size);
         tomoe.space.elements().any(|window| {
             let Some(toplevel) = window.toplevel() else {
@@ -1537,15 +1536,22 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
                     .map(|s| s.states.contains(xdg_toplevel::State::Fullscreen))
                     .unwrap_or(false)
             });
+            let override_tearing = tomoe
+                .window_properties
+                .iter()
+                .find_map(|(id, props)| {
+                    (tomoe.windows.get(id) == Some(window)).then_some(props.tearing)
+                })
+                .flatten();
+            let allowed = override_tearing.unwrap_or(tomoe.lua.settings().tearing);
+            let hinted =
+                crate::protocols::tearing_control::surface_prefers_tearing(toplevel.wl_surface());
             fullscreen
                 && tomoe
                     .space
                     .element_geometry(window)
                     .is_some_and(|geo| geo.overlaps(output_rect))
-                && (force_tearing()
-                    || crate::protocols::tearing_control::surface_prefers_tearing(
-                        toplevel.wl_surface(),
-                    ))
+                && (force_tearing() || (allowed && (override_tearing == Some(true) || hinted)))
         })
     };
     let Tomoe {
@@ -1558,6 +1564,7 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
         ui,
         borders,
         shadows,
+        window_radii,
         corner_damage,
         animations,
         lock_surfaces,
@@ -1640,6 +1647,7 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
             borders,
             shadows,
             corner_radius,
+            window_radii,
             corner_damage,
             animations,
             anim_now,

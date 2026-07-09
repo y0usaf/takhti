@@ -714,7 +714,14 @@ works — all landed; live night-light run pending.*
      Hyprland-shape range/color/power falloff, shared by GLES/TTY/capture;
      animation/camera following and fullscreen omission preserve direct scanout.
      Configured by `settings.shadow`; nested + TTY visual checks pending.
-   - [ ] Per-window radius/tearing/border-color queued-op surface.
+   - [x] Per-window radius/tearing/border-color queued-op surface:
+     `Window:set_properties { radius, tearing, border = { focused,
+     unfocused } }` replaces overrides atomically (empty table clears them),
+     applies through the shared GLES/TTY/capture path, and lets rules grant
+     hint-less XWayland tearing while retaining fullscreen/hardware gates.
+     Overrides reset on config reload before restore/open replay, so removed
+     rules cannot leak policy. Exercised by the extension-surface example;
+     TTY tearing + visual decoration check pending.
 4. Dual-kawase blur incl. blur-behind for layer surfaces (re-read
    `ref/ShojiWM/knowledges/effect-invalidation.md` first)
 

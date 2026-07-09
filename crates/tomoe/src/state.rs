@@ -58,7 +58,7 @@ use crate::coords;
 use crate::cursor::Cursor;
 use crate::input::{Action, Bind};
 use crate::lock::LockState;
-use crate::lua::{KeyboardSettings, LuaRuntime, OutputProps, WinProps, WindowOp};
+use crate::lua::{KeyboardSettings, LuaRuntime, OutputProps, WinProps, WindowOp, WindowProperties};
 use crate::process::{Launch, ProcessDecl, ProcessManager, ProcessSpec};
 use crate::space::PhysicalSpace;
 use crate::ui::widgets::{self, Tag, UiEvent, WidgetEntry, WidgetHandler, WidgetKind, WidgetSpec};
@@ -96,6 +96,10 @@ pub struct Tomoe {
     next_window_id: u64,
     /// Last geometry requested by Lua, for `show()` without `set_geometry()`.
     desired_loc: HashMap<u64, Point<i32, Physical>>,
+    /// Lua-owned per-window rendering/presentation overrides. Replaced as a
+    /// whole by `Window:set_properties` and cleared before config reload policy
+    /// is restored/replayed, so removed rules cannot leak stale behavior.
+    pub window_properties: HashMap<u64, WindowProperties>,
     /// Geometry before the *native* fullscreen fallback kicked in, restored
     /// on unfullscreen. Unused when Lua policy consumes the requests.
     pub(crate) fullscreen_prev: HashMap<u64, Rectangle<i32, Physical>>,
@@ -116,6 +120,9 @@ pub struct Tomoe {
     /// shader uniform, invisible to damage tracking, so radius changes bump
     /// these (stable element ids, like the border buffers).
     pub corner_damage: HashMap<Window, crate::render::damage::ExtraDamage>,
+    /// Effective per-window corner radii (global setting plus Lua overrides),
+    /// refreshed alongside border/shadow shader state.
+    pub window_radii: HashMap<Window, i32>,
     /// The corner radius `corner_damage` was last bumped for.
     pub applied_corner_radius: i32,
     /// Render-time animation state (window move offsets, open fades): the
@@ -359,6 +366,7 @@ impl Tomoe {
             windows: HashMap::new(),
             next_window_id: 1,
             desired_loc: HashMap::new(),
+            window_properties: HashMap::new(),
             fullscreen_prev: HashMap::new(),
             in_lua: false,
             consumed_buttons: std::collections::HashSet::new(),
@@ -366,6 +374,7 @@ impl Tomoe {
             borders: HashMap::new(),
             shadows: HashMap::new(),
             corner_damage: HashMap::new(),
+            window_radii: HashMap::new(),
             animations: Default::default(),
             applied_corner_radius: 0,
             cursor: Cursor::load(),
@@ -504,6 +513,13 @@ impl Tomoe {
         let saved = self.lua.save_reload_state();
 
         self.lua = new_lua;
+        // Per-window props are config policy, not persistent core state. The
+        // fresh config's restore/open replay can declare them again.
+        self.window_properties.clear();
+        self.window_radii.clear();
+        for damage in self.corner_damage.values_mut() {
+            damage.damage_all();
+        }
         // Deferred screencast resolvers died with the old VM; answer their
         // waiting portals with the fallback action instead of a timeout.
         crate::ipc::abandon_pending_screencasts(self);
@@ -528,11 +544,17 @@ impl Tomoe {
         let was_in_lua = self.in_lua;
         self.in_lua = true;
         let restored = self.lua.restore_reload_state(&saved);
+        let mut ids: Vec<u64> = self.windows.keys().copied().collect();
+        ids.sort_unstable();
         if restored == 0 && (self.lua.has_window_open_hooks() || self.lua.has_window_rules()) {
-            let mut ids: Vec<u64> = self.windows.keys().copied().collect();
-            ids.sort_unstable();
             for id in ids {
                 self.lua.emit_window_open(id);
+            }
+        } else if restored > 0 && self.lua.has_window_rules() {
+            // Restore replaces open-hook replay, but rule apply functions also
+            // own fresh-VM policy (notably per-window rendering properties).
+            for id in ids {
+                self.lua.reapply_window_rules(id);
             }
         }
         self.in_lua = was_in_lua;
@@ -937,6 +959,18 @@ impl Tomoe {
                     }
                 }
             }
+            WindowOp::SetProperties(id, props) => {
+                if window(self, id).is_none() {
+                    return;
+                }
+                let changed = self.window_properties.get(&id) != Some(&props);
+                self.window_properties.insert(id, props);
+                if changed {
+                    if let Some(window) = window(self, id) {
+                        self.corner_damage.entry(window).or_default().damage_all();
+                    }
+                }
+            }
             WindowOp::Show(id) => {
                 let Some(window) = window(self, id) else {
                     return;
@@ -1106,6 +1140,7 @@ impl Tomoe {
         self.borders.remove(window);
         self.shadows.remove(window);
         self.corner_damage.remove(window);
+        self.window_radii.remove(window);
         self.animations.remove(window);
         self.space.unmap(window);
         let Some(id) = id else { return };
@@ -1114,6 +1149,7 @@ impl Tomoe {
         // A session capturing this window stops now (its source is gone).
         crate::capture::refresh_capture_sessions(self);
         self.desired_loc.remove(&id);
+        self.window_properties.remove(&id);
         self.fullscreen_prev.remove(&id);
         // No leave event for a window that no longer exists; the next motion
         // re-diffs against whatever is under the pointer now.

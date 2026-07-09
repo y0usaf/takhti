@@ -23,7 +23,20 @@ tomoe.settings {
 -- (wm.lua honors workspace/fullscreen/focus); `apply` runs when a matching
 -- window opens, after the on_window_open hooks.
 tomoe.rule { app_id = "firefox", workspace = 2 }
-tomoe.rule { app_id = "^mpv$", fullscreen = true }
+tomoe.rule {
+  app_id = "^mpv$",
+  fullscreen = true,
+  -- Product policy uses the same queued public surface as user config. This
+  -- grants XWayland games tearing without a wp_tearing_control hint and gives
+  -- video windows their own decoration treatment.
+  apply = function(win)
+    win:set_properties {
+      radius = 0,
+      tearing = true,
+      border = { focused = "#bb9af7", unfocused = "#565f89" },
+    }
+  end,
+}
 tomoe.rule { title = "Picture%-in%-Picture", focus = false }
 tomoe.rule {
   app_id = "^foot$",

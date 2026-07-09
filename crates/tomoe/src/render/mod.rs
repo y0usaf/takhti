@@ -304,6 +304,7 @@ pub fn scene_elements<R: TomoeRenderer>(
     borders: Vec<OutputRenderElements<R>>,
     shadows: Vec<OutputRenderElements<R>>,
     corner_radius: i32,
+    window_radii: &HashMap<Window, i32>,
     corner_damage: &HashMap<Window, ExtraDamage>,
     animations: &crate::animation::Animations,
     anim_now: std::time::Duration,
@@ -335,12 +336,7 @@ pub fn scene_elements<R: TomoeRenderer>(
 
     // Rounded corners: the shader program lives on the Gles context; its
     // absence (compile failure, missing init) simply disables rounding.
-    let radius = corner_radius.max(0) as f32;
-    let clip_program = if radius > 0. {
-        Shaders::get(renderer).and_then(|s| s.clipped_surface.clone())
-    } else {
-        None
-    };
+    let clip_program = Shaders::get(renderer).and_then(|s| s.clipped_surface.clone());
 
     // Windows top → bottom. The stored location is the geometry origin; the
     // buffer origin shifts by the client's (logical) geometry offset, rounded
@@ -399,7 +395,12 @@ pub fn scene_elements<R: TomoeRenderer>(
             }
         }
 
-        let program = if is_fullscreen(window) {
+        let radius = window_radii
+            .get(window)
+            .copied()
+            .unwrap_or(corner_radius)
+            .max(0) as f32;
+        let program = if is_fullscreen(window) || radius == 0. {
             None
         } else {
             clip_program.clone()

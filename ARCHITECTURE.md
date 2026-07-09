@@ -118,7 +118,8 @@ crate tomoe
 │   ├── enum UiOp: pub
 │   ├── struct WatchdogGuard: pub(self)
 │   ├── struct WinProps: pub
-│   └── enum WindowOp: pub
+│   ├── enum WindowOp: pub
+│   └── struct WindowProperties: pub
 ├── mod process: pub(crate)
 │   ├── enum Launch: pub
 │   ├── enum ProcessDecl: pub

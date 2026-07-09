@@ -609,9 +609,21 @@ pub struct OutputProps {
 }
 
 /// Queued operations, applied by the core after each Lua entry.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WindowProperties {
+    /// Per-window overrides; `None` falls back to the corresponding setting.
+    pub radius: Option<i32>,
+    pub tearing: Option<bool>,
+    pub border_focused: Option<[f32; 4]>,
+    pub border_unfocused: Option<[f32; 4]>,
+}
+
 #[derive(Debug, Clone)]
 pub enum WindowOp {
     SetGeometry(u64, (i32, i32, i32, i32)),
+    /// Replace all per-window rendering/presentation overrides. Omitted fields
+    /// fall back to global settings, so an empty table clears every override.
+    SetProperties(u64, WindowProperties),
     Show(u64),
     Hide(u64),
     Focus(u64),
@@ -1062,6 +1074,30 @@ impl UserData for LuaWindow {
                 Ok(())
             },
         );
+        methods.add_method("set_properties", |_, this, table: Table| {
+            let radius = table.get::<Option<i32>>("radius")?.map(|v| v.max(0));
+            let tearing = table.get::<Option<bool>>("tearing")?;
+            let border = table.get::<Option<Table>>("border")?;
+            let parse = |key: &str| -> mlua::Result<Option<[f32; 4]>> {
+                let Some(border) = border.as_ref() else {
+                    return Ok(None);
+                };
+                let Some(value) = border.get::<Option<String>>(key)? else {
+                    return Ok(None);
+                };
+                parse_color(&value).map(Some).ok_or_else(|| {
+                    mlua::Error::runtime(format!("invalid window border.{key} color {value:?}"))
+                })
+            };
+            let props = WindowProperties {
+                radius,
+                tearing,
+                border_focused: parse("focused")?,
+                border_unfocused: parse("unfocused")?,
+            };
+            this.op(WindowOp::SetProperties(this.id, props));
+            Ok(())
+        });
         methods.add_method("show", |_, this, ()| {
             this.op(WindowOp::Show(this.id));
             Ok(())
@@ -2532,13 +2568,21 @@ impl LuaRuntime {
         self.emit_window_event(id, |hooks| &hooks.window_open, "on_window_open");
         // Rule `apply` functions run after the hooks so they can refine
         // whatever placement the WM just queued (later ops win).
-        self.apply_window_rules(id);
+        self.apply_window_rules_inner(id);
+    }
+
+    /// Re-run only rule `apply` functions for an existing window. Config
+    /// reload uses this after state restore: open hooks must not replay, but
+    /// per-window rule properties belong to the fresh VM and must be rebuilt.
+    pub fn reapply_window_rules(&mut self, id: u64) {
+        let _watchdog = self.watchdog();
+        self.apply_window_rules_inner(id);
     }
 
     /// Run the `apply` function of every rule matching the window — the
     /// function form of window rules. Rules are re-borrowed per iteration:
     /// matcher/apply functions are user code and may declare further rules.
-    fn apply_window_rules(&mut self, id: u64) {
+    fn apply_window_rules_inner(&mut self, id: u64) {
         let len = self.shared.rules.borrow().len();
         for i in 0..len {
             if !rule_matches(&self.lua, &self.shared, i, id) {
@@ -3223,15 +3267,22 @@ mod tests {
         let mut rt = LuaRuntime::new().unwrap();
         rt.lua
             .load(
-                r#"
+                r##"
                 tomoe.rule { app_id = "^mpv$", fullscreen = true }
                 tomoe.rule { title = "Fire", workspace = 3, focus = false }
                 tomoe.rule { app_id = "fire", workspace = 5 }
                 tomoe.rule {
                   match = function(w) return w:app_id() == "foot" end,
-                  apply = function(w) w:set_geometry(1, 2, 300, 200) end,
+                  apply = function(w)
+                    w:set_geometry(1, 2, 300, 200)
+                    w:set_properties {
+                      radius = 18,
+                      tearing = true,
+                      border = { focused = "#ff0000", unfocused = "#00800080" },
+                    }
+                  end,
                 }
-                "#,
+                "##,
             )
             .exec()
             .unwrap();
@@ -3274,10 +3325,41 @@ mod tests {
         assert!(rt.take_ops().is_empty(), "mpv rule has no apply");
         rt.emit_window_open(3);
         let ops = rt.take_ops();
-        assert!(
-            matches!(ops.as_slice(), [WindowOp::SetGeometry(3, (1, 2, 300, 200))]),
-            "{ops:?}"
-        );
+        assert!(matches!(
+            ops.first(),
+            Some(WindowOp::SetGeometry(3, (1, 2, 300, 200)))
+        ));
+        let Some(WindowOp::SetProperties(3, props)) = ops.get(1) else {
+            panic!("missing queued properties: {ops:?}");
+        };
+        assert_eq!(props.radius, Some(18));
+        assert_eq!(props.tearing, Some(true));
+        assert_eq!(props.border_focused, parse_color("#ff0000"));
+        assert_eq!(props.border_unfocused, parse_color("#00800080"));
+
+        // Replacement semantics make clearing deterministic: an empty table
+        // drops every override back to global settings.
+        rt.lua
+            .load("tomoe.window(3):set_properties({})")
+            .exec()
+            .unwrap();
+        assert!(matches!(
+            rt.take_ops().as_slice(),
+            [WindowOp::SetProperties(
+                3,
+                WindowProperties {
+                    radius: None,
+                    tearing: None,
+                    border_focused: None,
+                    border_unfocused: None
+                }
+            )]
+        ));
+        assert!(rt
+            .lua
+            .load(r#"tomoe.window(3):set_properties { border = { focused = "nope" } }"#)
+            .exec()
+            .is_err());
     }
 
     /// Hook return values map to replies; defer keeps the request open for
