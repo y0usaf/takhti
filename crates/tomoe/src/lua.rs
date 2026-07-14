@@ -290,6 +290,14 @@ pub struct Settings {
     /// render completes hangs the whole display pipeline. Costs a little
     /// latency; off by default.
     pub wait_for_frame_completion: bool,
+    /// Accept xdg-activation tokens whose input serial is older than the last
+    /// keyboard/pointer enter. This accommodates clients such as Discord and
+    /// Telegram that replace valid tokens with stale ones, but weakens the
+    /// focus-stealing protection; disabled by default.
+    pub honor_xdg_activation_with_invalid_serial: bool,
+    /// Freeze the scene when the interactive screenshot UI opens, so window
+    /// updates cannot move underneath the selection. The pointer remains live.
+    pub screenshot_freeze: bool,
     /// xkb keymap + key repeat, applied to the seat keyboard.
     pub keyboard: KeyboardSettings,
     /// libinput device config (tty backend).
@@ -334,6 +342,8 @@ impl Default for Settings {
             focus_follows_mouse: false,
             tearing: false,
             wait_for_frame_completion: false,
+            honor_xdg_activation_with_invalid_serial: false,
+            screenshot_freeze: true,
             keyboard: KeyboardSettings::default(),
             input: InputConfig::default(),
             watchdog_ms: 1000,
@@ -1333,6 +1343,14 @@ impl LuaRuntime {
                 }
                 if let Ok(Some(wait)) = table.get::<Option<bool>>("wait_for_frame_completion") {
                     settings.wait_for_frame_completion = wait;
+                }
+                if let Ok(Some(freeze)) = table.get::<Option<bool>>("screenshot_freeze") {
+                    settings.screenshot_freeze = freeze;
+                }
+                if let Ok(Some(honor)) =
+                    table.get::<Option<bool>>("honor_xdg_activation_with_invalid_serial")
+                {
+                    settings.honor_xdg_activation_with_invalid_serial = honor;
                 }
                 if let Ok(Some(ms)) = table.get::<Option<u64>>("watchdog_ms") {
                     settings.watchdog_ms = ms;
@@ -3052,6 +3070,40 @@ mod tests {
             .exec()
             .unwrap();
         assert!(rt.settings().wait_for_frame_completion);
+    }
+
+    #[test]
+    fn parse_screenshot_freeze() {
+        let rt = LuaRuntime::new().unwrap();
+        assert!(rt.settings().screenshot_freeze);
+        rt.lua
+            .load(r#"tomoe.settings { screenshot_freeze = false }"#)
+            .exec()
+            .unwrap();
+        assert!(!rt.settings().screenshot_freeze);
+        // Missing keys in partial updates preserve the configured value.
+        rt.lua
+            .load(r#"tomoe.settings { gaps = 4 }"#)
+            .exec()
+            .unwrap();
+        assert!(!rt.settings().screenshot_freeze);
+    }
+
+    #[test]
+    fn parse_invalid_activation_serial_setting() {
+        let rt = LuaRuntime::new().unwrap();
+        assert!(!rt.settings().honor_xdg_activation_with_invalid_serial);
+        rt.lua
+            .load(r#"tomoe.settings { honor_xdg_activation_with_invalid_serial = true }"#)
+            .exec()
+            .unwrap();
+        assert!(rt.settings().honor_xdg_activation_with_invalid_serial);
+        // Missing keys in partial updates preserve the configured value.
+        rt.lua
+            .load(r#"tomoe.settings { gaps = 4 }"#)
+            .exec()
+            .unwrap();
+        assert!(rt.settings().honor_xdg_activation_with_invalid_serial);
     }
 
     #[test]

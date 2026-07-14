@@ -419,6 +419,63 @@ pub const XDG_ACTIVATION_TOKEN_TIMEOUT: Duration = Duration::from_secs(10);
 /// urgency pings rather than focus steals — so do we (and niri).
 struct UrgentOnlyMarker;
 
+/// Decide whether the input serial on an activation token is acceptable.
+/// Serial-less tokens are accepted so the caller can mark them urgency-only;
+/// they never become focus activations.
+fn accepts_activation_serial(
+    serial: Option<Serial>,
+    keyboard_last_enter: Option<Serial>,
+    pointer_last_enter: Option<Serial>,
+    honor_invalid_serial: bool,
+) -> bool {
+    let Some(serial) = serial else {
+        return true;
+    };
+    honor_invalid_serial
+        || keyboard_last_enter.is_some_and(|last_enter| serial.is_no_older_than(&last_enter))
+        || pointer_last_enter.is_some_and(|last_enter| serial.is_no_older_than(&last_enter))
+}
+
+#[cfg(test)]
+mod activation_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_serial_requires_explicit_opt_in() {
+        let last_enter = Some(Serial::from(100));
+        assert!(!accepts_activation_serial(
+            Some(Serial::from(99)),
+            last_enter,
+            None,
+            false,
+        ));
+        assert!(accepts_activation_serial(
+            Some(Serial::from(99)),
+            last_enter,
+            None,
+            true,
+        ));
+    }
+
+    #[test]
+    fn valid_and_serial_less_tokens_keep_existing_behavior() {
+        let last_enter = Some(Serial::from(100));
+        assert!(accepts_activation_serial(
+            Some(Serial::from(100)),
+            last_enter,
+            None,
+            false,
+        ));
+        assert!(accepts_activation_serial(
+            Some(Serial::from(101)),
+            None,
+            last_enter,
+            false,
+        ));
+        assert!(accepts_activation_serial(None, last_enter, None, false));
+    }
+}
+
 impl XdgActivationHandler for Tomoe {
     fn activation_state(&mut self) -> &mut XdgActivationState {
         &mut self.activation_state
@@ -434,18 +491,20 @@ impl XdgActivationHandler for Tomoe {
             return false;
         };
 
-        // Accept serials no older than the device's last focus enter — check
-        // both keyboard and pointer, since layer-shell surfaces without
-        // keyboard interactivity only ever saw pointer serials.
-        let keyboard_valid = seat
-            .get_keyboard()
-            .and_then(|k| k.last_enter())
-            .is_some_and(|last_enter| serial.is_no_older_than(&last_enter));
-        let pointer_valid = seat
-            .get_pointer()
-            .and_then(|p| p.last_enter())
-            .is_some_and(|last_enter| serial.is_no_older_than(&last_enter));
-        keyboard_valid || pointer_valid
+        // Discord and Telegram replace a valid supplied token with one made
+        // from an older serial when launched from a tray/notification. Keep
+        // the strict default, but provide an explicit compatibility escape
+        // hatch matching niri's opt-in behavior. The seat resource is still
+        // validated above, so this does not accept a token from an unknown
+        // seat.
+        let honor_invalid_serial = self.lua.settings().honor_xdg_activation_with_invalid_serial;
+        accepts_activation_serial(
+            Some(serial),
+            seat.get_keyboard()
+                .and_then(|keyboard| keyboard.last_enter()),
+            seat.get_pointer().and_then(|pointer| pointer.last_enter()),
+            honor_invalid_serial,
+        )
     }
 
     fn request_activation(

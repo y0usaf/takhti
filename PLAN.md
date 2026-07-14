@@ -128,6 +128,24 @@ Done and working:
 
 ### vs niri (performance & session correctness)
 
+- [x] **P0 — Discord/Telegram xdg-activation compatibility.**
+      Live-reproduced on the TTY session with the real `Alt+3` →
+      `tomoe.spawn("discord")` bind while Discord was hidden and foot focused:
+      the second Electron instance did not redeem Tomoe's fresh exported
+      `XDG_ACTIVATION_TOKEN`; the existing Discord process instead emitted six
+      `get_activation_token` + `activate` cycles using an old keyboard serial
+      (`1614917`, versus recent enter `1623664`). This is the exact known
+      niri compatibility case documented in `ref/niri/src/handlers/mod.rs:791-800`.
+      `tomoe.settings { honor_xdg_activation_with_invalid_serial = true }` is
+      the explicit opt-in escape hatch: `XdgActivationHandler::token_created`
+      retains otherwise-invalid serials, while still validating the seat, so
+      the existing `on_window_request("activate")` path and WM workspace/deck
+      policy handle them normally. The secure default remains strict; no app IDs
+      are special-cased. Lua parsing, default/opt-in policy, valid serials, and
+      serial-less urgency behavior are unit-tested. **Pending live acceptance:**
+      enable the setting, hide an already-running Discord, press the launch bind,
+      observe its existing window becomes visible/focused, then restore strict
+      mode and confirm the stale request is ignored.
 - [x] presentation-time protocol (feedback rides the DRM frame as user data,
       fired from the vblank with the hardware timestamp; winit approximates
       with the compositor clock at submit)
@@ -168,15 +186,18 @@ Done and working:
 - [x] ext-session-lock-v1 (niri-shape: `locked` confirmed only after every
       output rendered a locked frame; dark-red backdrop fallback; dead-locker
       replacement; locked scene also fed to all capture paths)
-- [x] xdg-activation (niri-shape validation: serial-less tokens are
-      urgency-only, serials checked against keyboard/pointer last-enter,
-      10 s timeout + prune timer; requests route through
-      `on_window_request` as "activate"/"urgent" so Lua policy decides —
-      wm.lua consumes "activate" by switching to the window's workspace
-      — native default focuses ("activate") or ignores ("urgent");
-      tokens presented pre-map are stashed and honored at `add_window`;
-      user-initiated spawns mint external tokens exported as
-      `XDG_ACTIVATION_TOKEN`/`DESKTOP_STARTUP_ID`)
+- [x] Strict xdg-activation mechanics (niri-shape validation: serial-less
+      tokens are urgency-only, serials checked against keyboard/pointer
+      last-enter, 10 s timeout + prune timer; requests route through
+      `on_window_request` as "activate"/"urgent" so Lua policy decides — wm.lua
+      consumes "activate" by switching to the window's workspace — native
+      default focuses ("activate") or ignores ("urgent"); tokens presented
+      pre-map are stashed and honored at `add_window`; user-initiated spawns
+      mint external tokens exported as `XDG_ACTIVATION_TOKEN`/
+      `DESKTOP_STARTUP_ID`). Discord/Telegram invalid-serial compatibility is
+      now an explicit `honor_xdg_activation_with_invalid_serial` opt-in; the
+      strict default and opt-in behavior are unit-tested. Live checks remain
+      pending.
 - [x] Primary selection (focus follows keyboard focus, same as the clipboard)
 - [x] libinput device config (tap, accel, natural scroll, DWT, scroll/click
       method…) via `settings.touchpad`/`settings.mouse`, per-device
@@ -678,26 +699,27 @@ setup. — All landed.*
    on demarshaled arrays: data≠NULL, alloc=0) — not our bug; niri sends
    the same empty arrays and a state-less window is only expressible as
    an empty array
-2. ~~xdg-activation~~ done — mechanics in the niri gap list above;
-   activate/urgent ride the existing `on_window_request` policy path, so
-   wlr-foreign-toplevel-management's activate (§1) can reuse it directly.
-   Compositor-side token creation landed too: every user-initiated
-   spawn (`tomoe.spawn`, `tomoe.process.spawn`, `"spawn …"` binds) mints
-   an external token (`create_external_token`) exported to the child as
-   `XDG_ACTIVATION_TOKEN` + `DESKTOP_STARTUP_ID` (niri-style; explicit
-   `env` declarations win, manifest once/service entries and restarts
-   get none — a restart token would be stale). External tokens carry no
-   serial and no urgent marker, so they focus if redeemed inside the
-   10 s window; unredeemed ones fall to the prune timer. Live check
-   pending: a real notification-click focus (needs a daemon + client
-   that redeem tokens; global + request path verified nested)
+2. xdg-activation strict mechanics + compatibility done — mechanics in the
+   niri gap list above; activate/urgent ride the existing
+   `on_window_request` policy path, so wlr-foreign-toplevel-management's
+   activate (§1) can reuse it directly. Compositor-side token creation landed
+   too: every user-initiated spawn (`tomoe.spawn`, `tomoe.process.spawn`,
+   `"spawn …"` binds) mints an external token (`create_external_token`) exported
+   to the child as `XDG_ACTIVATION_TOKEN` + `DESKTOP_STARTUP_ID` (niri-style;
+   explicit `env` declarations win, manifest once/service entries and restarts
+   get none — a restart token would be stale). External tokens carry no serial
+   and no urgent marker, so they focus if redeemed inside the 10 s window;
+   unredeemed ones fall to the prune timer. The Discord/Telegram stale-serial
+   escape hatch is `tomoe.settings.honor_xdg_activation_with_invalid_serial`,
+   default false; live valid/stale-token checks remain pending.
 3. ~~Gamma control / night light~~ done — wlr-gamma-control (mechanics in
    the Ecosystem gap list above); night-light policy stays in the daemon
    (wlsunset/gammastep), which can ship as a `tomoe.process.service`
    entry in user config. Live check pending: wlsunset on a tty session
 
-*Accept: taskbar sees windows, activation focuses them, night light
-works — all landed; live night-light run pending.*
+*Accept: taskbar sees windows and night light works; strict activation plus the
+  opt-in Discord/Telegram compatibility path are implemented and tested, with
+  live-token and night-light runs pending.*
 
 ### M6 — Phase 5: eye-candy
 

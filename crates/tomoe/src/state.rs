@@ -1532,7 +1532,8 @@ impl Tomoe {
     }
 
     /// Open the interactive region-selection overlay on the output under the
-    /// pointer; `input.rs` intercepts everything until it closes.
+    /// pointer; `input.rs` intercepts everything until it closes. When enabled,
+    /// capture the scene first so client updates cannot move under the selection.
     fn open_screenshot_ui(&mut self) {
         // The overlay is modal over the session; a locked screen has no
         // session to select from (captures would only show the lock scene).
@@ -1543,13 +1544,24 @@ impl Tomoe {
             warn!("screenshot: no output to capture");
             return;
         };
-        self.ui.screenshot.open(output);
+        let frozen = if self.lua.settings().screenshot_freeze {
+            match crate::capture::capture_rgba_with_cursor(self, &output, None, false) {
+                Ok(snapshot) => Some(snapshot),
+                Err(err) => {
+                    warn!("error freezing screenshot UI: {err:#}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        self.ui.screenshot.open(output, frozen);
         self.queue_redraw_all();
     }
 
     /// Confirm the screenshot UI: capture its selection (or the whole output
-    /// when nothing is selected). Closes the overlay *before* capturing so
-    /// the rendered scene never contains it.
+    /// when nothing is selected). Capture paths omit the controls but retain
+    /// the frozen scene, so the result exactly matches what was selected.
     pub fn screenshot_confirm(&mut self) {
         let Some(output) = self.ui.screenshot.output().cloned() else {
             return;
@@ -1558,11 +1570,11 @@ impl Tomoe {
             .space
             .output_geometry(&output)
             .and_then(|geo| self.ui.screenshot.selection_rect(geo.size));
-        self.ui.screenshot.close();
-        self.queue_redraw_all();
         if let Err(err) = crate::screenshot::screenshot(self, &output, region) {
             warn!("error taking screenshot: {err:#}");
         }
+        self.ui.screenshot.close();
+        self.queue_redraw_all();
     }
 
     // ── Idle (ext-idle-notify / zwp-idle-inhibit) ──

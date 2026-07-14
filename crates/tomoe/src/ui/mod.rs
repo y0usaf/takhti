@@ -71,6 +71,9 @@ impl Ui {
                 output_size,
                 &mut elements,
             );
+        } else {
+            self.screenshot
+                .render_frozen(renderer, output, &mut elements);
         }
         let Some(fonts) = &self.fonts else {
             return elements;

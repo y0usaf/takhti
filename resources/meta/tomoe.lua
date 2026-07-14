@@ -491,6 +491,8 @@ function ScreencastRequest:defer() end
 ---@field focus_follows_mouse boolean # sloppy focus: focus the window under the pointer (default false)
 ---@field tearing boolean # allow async page flips for fullscreen windows that request tearing (default false)
 ---@field wait_for_frame_completion boolean # NVIDIA workaround: CPU-wait for rendering before queueing to KMS (default false)
+---@field honor_xdg_activation_with_invalid_serial boolean # accept stale input serials from clients such as Discord/Telegram; weakens focus-stealing protection (default false)
+---@field screenshot_freeze boolean # freeze the scene in the interactive screenshot UI; pointer remains live (default true)
 ---@field watchdog_ms integer # wall-clock budget of one Lua entry before the watchdog aborts it; 0 disables and restores LuaJIT compilation (default 1000)
 ---@field winit_size integer[] # { w, h } of the nested dev window (winit backend)
 ---@field border Border

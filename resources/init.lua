@@ -50,6 +50,13 @@ tomoe.settings {
   -- this on NVIDIA: fenced frames queued before the render completes hang
   -- the driver (whole-session freeze). Costs a little latency. Default: off.
   -- wait_for_frame_completion = true,
+  -- Discord and Telegram sometimes replace a valid activation token with an
+  -- old serial. This opt-in compatibility switch allows that focus request,
+  -- weakening focus-stealing protection. Default: off.
+  -- honor_xdg_activation_with_invalid_serial = true,
+  -- Freeze the scene while selecting an interactive screenshot, like niri;
+  -- the pointer remains live. Default: on.
+  -- screenshot_freeze = false,
   -- xkb keymap and key repeat. Unset fields use the xkb defaults
   -- (including XKB_DEFAULT_* environment variables).
   -- keyboard = {

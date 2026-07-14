@@ -615,13 +615,22 @@ pub fn render_capture_frame(tomoe: &mut Tomoe, session: &SessionRef, frame: Fram
 
 /// Render the current scene of `output` — cropped to `region` (output-local
 /// physical coordinates) when given — into an offscreen texture and read the
-/// pixels back as tightly packed RGBA8. Rows come out top-down: smithay's
-/// texture render targets flip the projection, so `copy_framebuffer` returns
-/// the same orientation [`render_to_shm`] copies verbatim into shm buffers.
+/// pixels back as tightly packed RGBA8. The pointer is included.
 pub fn capture_rgba(
     tomoe: &mut Tomoe,
     output: &Output,
     region: Option<Rectangle<i32, Physical>>,
+) -> Result<(Size<i32, Physical>, Vec<u8>)> {
+    capture_rgba_with_cursor(tomoe, output, region, true)
+}
+
+/// [`capture_rgba`] with explicit pointer inclusion. The screenshot UI uses
+/// this to freeze client content while leaving its live pointer unobscured.
+pub fn capture_rgba_with_cursor(
+    tomoe: &mut Tomoe,
+    output: &Output,
+    region: Option<Rectangle<i32, Physical>>,
+    include_cursor: bool,
 ) -> Result<(Size<i32, Physical>, Vec<u8>)> {
     let (mut parts, backend, _screencopy_state, _loop_handle, _now) = split_tomoe!(tomoe);
     let scale = parts.space.scale();
@@ -637,7 +646,7 @@ pub fn capture_rgba(
 
     let pixels = backend
         .with_primary_gles(|renderer| -> Result<Vec<u8>> {
-            let elements = parts.elements(renderer, output, region.loc, true);
+            let elements = parts.elements(renderer, output, region.loc, include_cursor);
             let mut damage_tracker =
                 OutputDamageTracker::new(region.size, scale, Transform::Normal);
             let (_damages, states) = damage_tracker.damage_output(1, &elements).unwrap();

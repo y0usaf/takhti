@@ -257,6 +257,8 @@ Motion event during a tomoe.grab_pointer grab.
 - `focus_follows_mouse: boolean` — sloppy focus: focus the window under the pointer (default false)
 - `tearing: boolean` — allow async page flips for fullscreen windows that request tearing (default false)
 - `wait_for_frame_completion: boolean` — NVIDIA workaround: CPU-wait for rendering before queueing to KMS (default false)
+- `honor_xdg_activation_with_invalid_serial: boolean` — accept stale input serials from clients such as Discord/Telegram; weakens focus-stealing protection (default false)
+- `screenshot_freeze: boolean` — freeze the scene in the interactive screenshot UI; pointer remains live (default true)
 - `watchdog_ms: integer` — wall-clock budget of one Lua entry before the watchdog aborts it; 0 disables and restores LuaJIT compilation (default 1000)
 - `winit_size: integer[]` — { w, h } of the nested dev window (winit backend)
 - `border: Border`
@@ -384,6 +386,7 @@ The default window manager: classic dwindle tiling with numbered workspaces, bui
 
 - `gaps: integer` — gap between windows in physical pixels (default 8)
 - `workspace_count: integer` — number of workspaces (default 9)
+- `honor_client_fullscreen: boolean` — honor application fullscreen requests; false keeps windows tiled unless a rule or WM command makes them fullscreen (default false)
 - `active: integer` — index of the visible workspace
 - `workspaces: Window[][]` — workspaces[i] = ordered list of window objects
 - `fullscreen: table<integer, true>` — fullscreen[window id] = true: excluded from tiling, covers its output

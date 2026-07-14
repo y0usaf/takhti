@@ -19,12 +19,16 @@
 ---@class wm
 ---@field gaps integer # gap between windows in physical pixels (default 8)
 ---@field workspace_count integer # number of workspaces (default 9)
+---@field honor_client_fullscreen boolean # honor application fullscreen requests; false keeps windows tiled unless a rule or WM command makes them fullscreen (default false)
 ---@field active integer # index of the visible workspace
 ---@field workspaces Window[][] # workspaces[i] = ordered list of window objects
 ---@field fullscreen table<integer, true> # fullscreen[window id] = true: excluded from tiling, covers its output
 local M = {
   gaps = 8,
   workspace_count = 9,
+  -- Applications do not choose layout policy: fullscreen rules and explicit
+  -- WM commands still work, but client requests remain tiled by default.
+  honor_client_fullscreen = false,
   active = 1,
   -- workspaces[i] = ordered list of window objects
   workspaces = {},
@@ -253,11 +257,14 @@ tomoe.on_window_open(function(win)
     win:hide()
     return
   end
-  if r.fullscreen or win:is_fullscreen() then
-    -- A rule demands fullscreen, or the client asked for it before
-    -- mapping (mpv, games).
+  if r.fullscreen or (M.honor_client_fullscreen and win:is_fullscreen()) then
     M.set_fullscreen(win, true)
   else
+    -- A client can request fullscreen before its first map. Undo the protocol
+    -- state as well as tiling it; an explicit fullscreen rule still wins.
+    if win:is_fullscreen() then
+      win:set_fullscreen(false)
+    end
     M.arrange()
   end
   if r.focus ~= false then
@@ -279,12 +286,15 @@ tomoe.on_window_close(function(win)
 end)
 
 -- Client state requests (F11, video players, …). Consuming the event (truthy
--- return) makes this config responsible for responding; maximize/minimize
--- fall through to the native default (ack / ignore) — a tiled layout has no
--- separate maximized or minimized state.
+-- return) makes this config responsible for responding. Fullscreen requests
+-- are denied by default so applications cannot choose layout policy; set
+-- honor_client_fullscreen = true to accept them. Maximize/minimize fall through
+-- to the native default (ack / ignore) — a tiled layout has no separate state.
 tomoe.on_window_request(function(ev)
   if ev.type == "fullscreen" then
-    M.set_fullscreen(ev.window, true, ev.output)
+    if M.honor_client_fullscreen then
+      M.set_fullscreen(ev.window, true, ev.output)
+    end
     return true
   elseif ev.type == "unfullscreen" then
     M.set_fullscreen(ev.window, false)

@@ -3,9 +3,10 @@
 //! While open, `input.rs` gives it the pointer and keyboard: left-drag
 //! selects a region, Enter/Space captures (the whole output when nothing is
 //! selected), Esc cancels. The overlay dims everything but the selection and
-//! shows a hint bar near the bottom of its output; captures never include it
-//! (`Ui::render_elements` skips it on the capture path).
+//! shows a hint bar near the bottom of its output. Capture paths omit the
+//! controls while retaining the optional frozen scene beneath them.
 
+use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::{
     MemoryRenderBuffer, MemoryRenderBufferRenderElement,
 };
@@ -37,6 +38,9 @@ enum State {
         /// Unordered: normalize via [`selection_to_rect`] before use.
         selection: Option<(Point<i32, Physical>, Point<i32, Physical>)>,
         dragging: bool,
+        /// Scene captured when the UI opened. Rendered beneath the selection
+        /// overlay so client updates cannot move while the user selects.
+        frozen: Option<MemoryRenderBuffer>,
     },
 }
 
@@ -65,12 +69,24 @@ impl ScreenshotUi {
         matches!(self.state, State::Open { .. })
     }
 
-    /// Open (or re-target) the overlay on `output` with no selection.
-    pub fn open(&mut self, output: Output) {
+    /// Open (or re-target) the overlay on `output` with no selection. `frozen`
+    /// is a full-output, tightly packed RGBA8 scene snapshot.
+    pub fn open(&mut self, output: Output, frozen: Option<(Size<i32, Physical>, Vec<u8>)>) {
+        let frozen = frozen.map(|(size, pixels)| {
+            MemoryRenderBuffer::from_slice(
+                &pixels,
+                Fourcc::Abgr8888,
+                (size.w, size.h),
+                1,
+                smithay::utils::Transform::Normal,
+                None,
+            )
+        });
         self.state = State::Open {
             output,
             selection: None,
             dragging: false,
+            frozen,
         };
     }
 
@@ -84,6 +100,28 @@ impl ScreenshotUi {
             State::Open { output, .. } => Some(output),
             State::Closed => None,
         }
+    }
+
+    /// Push only the frozen scene, without selection controls. Capture paths
+    /// use this so confirming returns exactly the frame the user selected.
+    pub fn render_frozen<R: TomoeRenderer>(
+        &self,
+        renderer: &mut R,
+        output: &Output,
+        elements: &mut Vec<OutputRenderElements<R>>,
+    ) {
+        let State::Open {
+            output: target,
+            frozen: Some(frozen),
+            ..
+        } = &self.state
+        else {
+            return;
+        };
+        if target != output {
+            return;
+        }
+        push_frozen(renderer, frozen, elements);
     }
 
     pub fn is_dragging(&self) -> bool {
@@ -162,6 +200,7 @@ impl ScreenshotUi {
         let State::Open {
             output: target,
             selection,
+            frozen,
             ..
         } = &self.state
         else {
@@ -197,7 +236,45 @@ impl ScreenshotUi {
             }
         }
 
-        let Some(selection) = selection else {
+        if let Some(selection) = selection {
+            let rect = selection_to_rect(selection, output_size);
+            let (x0, y0) = (rect.loc.x, rect.loc.y);
+            let (x1, y1) = (x0 + rect.size.w, y0 + rect.size.h);
+
+            // Accent border hugging the selection from the outside, clamped to
+            // the output.
+            let bx0 = (x0 - SELECTION_BORDER).max(0);
+            let by0 = (y0 - SELECTION_BORDER).max(0);
+            let bx1 = (x1 + SELECTION_BORDER).min(output_size.w);
+            let by1 = (y1 + SELECTION_BORDER).min(output_size.h);
+            let edges = [
+                Rectangle::new(Point::from((bx0, by0)), Size::from((bx1 - bx0, y0 - by0))),
+                Rectangle::new(Point::from((bx0, y1)), Size::from((bx1 - bx0, by1 - y1))),
+                Rectangle::new(Point::from((bx0, y0)), Size::from((x0 - bx0, y1 - y0))),
+                Rectangle::new(Point::from((x1, y0)), Size::from((bx1 - x1, y1 - y0))),
+            ];
+            for (buffer, edge) in self.border.iter_mut().zip(edges) {
+                push_solid(elements, buffer, edge, ACCENT);
+            }
+
+            // Dim everything around the selection hole: bands above and below
+            // spanning the full width, strips left and right of the selection.
+            let sides = [
+                Rectangle::new(Point::from((0, 0)), Size::from((output_size.w, y0))),
+                Rectangle::new(
+                    Point::from((0, y1)),
+                    Size::from((output_size.w, output_size.h - y1)),
+                ),
+                Rectangle::new(Point::from((0, y0)), Size::from((x0, y1 - y0))),
+                Rectangle::new(
+                    Point::from((x1, y0)),
+                    Size::from((output_size.w - x1, y1 - y0)),
+                ),
+            ];
+            for (buffer, side) in self.backdrop.iter_mut().zip(sides) {
+                push_solid(elements, buffer, side, BACKDROP);
+            }
+        } else {
             // Nothing selected yet: dim the whole output.
             push_solid(
                 elements,
@@ -205,46 +282,31 @@ impl ScreenshotUi {
                 Rectangle::from_size(output_size),
                 BACKDROP,
             );
-            return;
-        };
-
-        let rect = selection_to_rect(selection, output_size);
-        let (x0, y0) = (rect.loc.x, rect.loc.y);
-        let (x1, y1) = (x0 + rect.size.w, y0 + rect.size.h);
-
-        // Accent border hugging the selection from the outside, clamped to
-        // the output.
-        let bx0 = (x0 - SELECTION_BORDER).max(0);
-        let by0 = (y0 - SELECTION_BORDER).max(0);
-        let bx1 = (x1 + SELECTION_BORDER).min(output_size.w);
-        let by1 = (y1 + SELECTION_BORDER).min(output_size.h);
-        let edges = [
-            Rectangle::new(Point::from((bx0, by0)), Size::from((bx1 - bx0, y0 - by0))),
-            Rectangle::new(Point::from((bx0, y1)), Size::from((bx1 - bx0, by1 - y1))),
-            Rectangle::new(Point::from((bx0, y0)), Size::from((x0 - bx0, y1 - y0))),
-            Rectangle::new(Point::from((x1, y0)), Size::from((bx1 - x1, y1 - y0))),
-        ];
-        for (buffer, edge) in self.border.iter_mut().zip(edges) {
-            push_solid(elements, buffer, edge, ACCENT);
         }
 
-        // Dim everything around the selection hole: bands above and below
-        // spanning the full width, strips left and right of the selection.
-        let sides = [
-            Rectangle::new(Point::from((0, 0)), Size::from((output_size.w, y0))),
-            Rectangle::new(
-                Point::from((0, y1)),
-                Size::from((output_size.w, output_size.h - y1)),
-            ),
-            Rectangle::new(Point::from((0, y0)), Size::from((x0, y1 - y0))),
-            Rectangle::new(
-                Point::from((x1, y0)),
-                Size::from((output_size.w - x1, y1 - y0)),
-            ),
-        ];
-        for (buffer, side) in self.backdrop.iter_mut().zip(sides) {
-            push_solid(elements, buffer, side, BACKDROP);
+        // Elements are topmost-first: the frozen scene follows the overlay and
+        // covers all live session elements beneath it.
+        if let Some(frozen) = frozen {
+            push_frozen(renderer, frozen, elements);
         }
+    }
+}
+
+fn push_frozen<R: TomoeRenderer>(
+    renderer: &mut R,
+    frozen: &MemoryRenderBuffer,
+    elements: &mut Vec<OutputRenderElements<R>>,
+) {
+    if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+        renderer,
+        (0., 0.),
+        frozen,
+        None,
+        None,
+        None,
+        Kind::Unspecified,
+    ) {
+        elements.push(OutputRenderElements::Memory(element));
     }
 }
 
