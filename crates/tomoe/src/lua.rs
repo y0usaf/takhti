@@ -3107,6 +3107,28 @@ mod tests {
     }
 
     #[test]
+    fn wm_activation_uses_native_focus_fallback() {
+        let mut rt = LuaRuntime::new().unwrap();
+        let window = rt.test_window().unwrap();
+        rt.lua.globals().set("test_window", window).unwrap();
+        rt.lua
+            .load(
+                r#"
+                local wm = require("wm")
+                wm.active = 1
+                wm.workspaces[1] = { test_window }
+                "#,
+            )
+            .exec()
+            .unwrap();
+
+        // The WM selects the workspace, but the core must perform the focus
+        // after the Lua entry so custom focus hooks can reveal decked windows.
+        assert!(!rt.emit_window_request(0, "activate", None, None));
+        assert!(rt.take_ops().is_empty());
+    }
+
+    #[test]
     fn watchdog_aborts_runaway_entry() {
         let mut rt = LuaRuntime::new().unwrap();
         assert_eq!(rt.settings().watchdog_ms, 1000);

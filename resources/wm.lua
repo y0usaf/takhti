@@ -300,13 +300,14 @@ tomoe.on_window_request(function(ev)
     M.set_fullscreen(ev.window, false)
     return true
   elseif ev.type == "activate" then
-    -- xdg-activation with a valid token (e.g. a notification click):
-    -- switch to the window's workspace, then focus it.
+    -- Workspace selection is WM policy; leave the actual focus operation to
+    -- the core's native default. That emits on_focus_change after the queued
+    -- switch completes, so custom WMs can reveal an activated window inside
+    -- the current workspace (e.g. a deck/stack) before it receives focus.
     for i = 1, M.workspace_count do
       if find(M.workspaces[i], ev.window) then
         M.switch(i)
-        ev.window:focus()
-        return true
+        return false
       end
     end
   end

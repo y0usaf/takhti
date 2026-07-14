@@ -141,7 +141,9 @@ Done and working:
       retains otherwise-invalid serials, while still validating the seat, so
       the existing `on_window_request("activate")` path and WM workspace/deck
       policy handle them normally. The secure default remains strict; no app IDs
-      are special-cased. Lua parsing, default/opt-in policy, valid serials, and
+      are special-cased. The default `wm` hook selects the workspace but leaves
+      final focus to the core fallback, preserving `on_focus_change` for
+      deck/stack WMs. Lua parsing, default/opt-in policy, valid serials, and
       serial-less urgency behavior are unit-tested. **Pending live acceptance:**
       enable the setting, hide an already-running Discord, press the launch bind,
       observe its existing window becomes visible/focused, then restore strict
