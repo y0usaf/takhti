@@ -108,7 +108,7 @@ thin client. Contract (mirrored in tomoe's DESIGN.md/PLAN.md):
   bar config for moonshell (as it ships `wm.lua`); a combined
   home-manager module composes both flakes.
 - Shared Lua conventions (settings-table shape, `on_*` hook naming,
-  the `Mod` convention, reload contract) belong in a `~/Dev/design/`
+  the `Mod` convention, reload contract) belong in a `~/Dev/doctrines/`
   conventions doc, not shared code (roadmap M2).
 - No shared `lua-host` crate up front: tomoe's Lua host is entangled
   with frame-loop timing moonshell doesn't have. Extract only after
@@ -162,14 +162,14 @@ and the daily driver.
 - [x] **M2 — Lua runtime.** mlua/LuaJIT; `shell.window/state/interval/
   once/exec/quit`, `ui.*` stdlib ported verbatim from nur; hot reload
   (inotify on the config tree, fresh VM, windows re-created); Lua
-  conventions doc landed in `~/Dev/design/`.
+  conventions doc landed in `~/Dev/doctrines/`.
   *Accept: nur's `simple-bar/init.lua` runs unmodified; editing it
   live-reloads without restart; idle RSS still under 25 MB.*
   *Done 2026-07-08: the fixture runs byte-for-byte unmodified (nur
   module names alias to the moonshell modules; placeholder
   `shell.services.*` facades until M3); live edit → reload verified;
   17.4 MB RSS release with the full bar + 1 Hz clock, wakeups only
-  from the timer. Conventions doc: `~/Dev/design/conventions/lua.md`.
+  from the timer. Conventions doc: `~/Dev/doctrines/conventions/lua.md`.
   See PLAN.md M2 §1–§6.*
 - [ ] **M3 — services, natively.** D-Bus (rustbus): UPower, MPRIS,
   NetworkManager, notifications daemon, SNI tray, PowerProfiles; sysfs

@@ -51,7 +51,7 @@ switches / 5 s; 10 successive hot reloads → zero RSS growth**. §6 done
 `lua/moonshell/`, `package.preload` registration with `nur.*` aliases,
 `ui.bar_layout` + theme-aware `shell.window` wrapper, placeholder
 `shell.services.*` facades, Lua conventions doc landed in
-`~/Dev/design/conventions/lua.md`. **nur's `examples/simple-bar/
+`~/Dev/doctrines/conventions/lua.md`. **nur's `examples/simple-bar/
 init.lua` runs byte-for-byte unmodified** (vendored as the acceptance
 fixture; CI test `nur_simple_bar_runs_unmodified`). Live on tomoe:
 **17.4 MB RSS (release) with the full bar + 1 Hz clock (budget 25 MB);
@@ -178,7 +178,7 @@ Two working inputs exist:
       gap (tracked in tomoe PLAN.md): no core event for title changes
       after window_open, so a focused title can go stale.
 - [x] M2: shared Lua conventions doc landed 2026-07-08 as
-      `~/Dev/design/conventions/lua.md` (API global, settings tables,
+      `~/Dev/doctrines/conventions/lua.md` (API global, settings tables,
       module shape, `on_*` naming, `Mod`, the reload contract) — tomoe
       and moonshell both cite it instead of restating.
 - [ ] M3 §7: check whether tomoe's IPC listener accepts **multiple
