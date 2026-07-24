@@ -79,7 +79,7 @@ DESIGN.md table at F0):
 Mechanical unification. Nothing is fused yet; both binaries build from
 one workspace and all design docs tell the truth about what's coming.
 
-- [ ] Merge moonshell's git history into tomoe (subtree merge or
+- [x] Merge moonshell's git history into tomoe (subtree merge or
       `git merge --allow-unrelated-histories` after path-rewriting into
       `crates/`; history must survive `git log --follow` on moved
       files). moonshell's crates land as workspace members, keeping
@@ -90,27 +90,36 @@ one workspace and all design docs tell the truth about what's coming.
       `crates/moonshell` (transitional standalone binary, kept only
       until F6; after F6 the name lives on in the subsystem crates and
       the Lua layer). `lua/` merges into `resources/` layout.
-- [ ] One flake: tomoe's flake builds everything; moonshell's flake
+- [x] One flake: tomoe's flake builds everything; moonshell's flake
       checks (the M0 `boot` RSS gate included, while the standalone
       binary exists) fold into `nix flake check`. Delete moonshell's
       flake.
-- [ ] Write `DESIGN.md` for tomoe from
+- [x] Write `DESIGN.md` for tomoe from
       `~/Dev/doctrines/templates/DESIGN.md` — it is referenced by
       ARCHITECTURE.md and moonshell's docs but never existed. It
       records: the fusion decision (lift "The decision" above),
       the doctrine-conformance table including the shell rows, and the
       divergences listed there.
-- [ ] Mark `~/Dev/moonshell` superseded: README pointer to tomoe,
+- [x] Mark `~/Dev/moonshell` superseded: README pointer to tomoe,
       archive the repo. Update moonshell rows in both PLAN.md
       interconnection trackers to "superseded by FUSION.md". Update
       `~/Dev/nur` wind-down note to point here.
-- [ ] Regenerate ARCHITECTURE.md (`scripts/gen-arch.sh`) for the
+- [x] Regenerate ARCHITECTURE.md (`scripts/gen-arch.sh`) for the
       enlarged workspace; `nix flake check` green including
       `arch-fresh`.
       *Accept: one repo; `nix build` produces tomoe, the portal, and
       the transitional moonshell binary; `nix flake check` green; no
       doc anywhere still claims the repos are separate or that
       moonshell is compositor-agnostic.*
+      *Done 2026-07-24: filter-repo path rewrite + two-parent merge
+      (`git log --follow` traces moved files into moonshell history);
+      one workspace (tomoe-ipc now a path dep; moonshell crates keep
+      AGPL-3.0-only explicitly), one flake (fmt/clippy/boot folded in —
+      the clippy -D warnings gate now covers tomoe code too, made clean
+      here); `nix flake check` green incl. the 20 MB boot RSS gate and
+      arch-fresh; moonshell repo archived on GitHub with a pointer
+      README; nur carries the wind-down note; superseded docs live as
+      `docs/moonshell-*.md` with banners.*
 
 ## F1 — element engine renders in-process
 
