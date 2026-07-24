@@ -159,11 +159,16 @@ crate moonshell_services
 │   ├── enum Scope: pub(self)
 │   ├── enum Source: pub
 │   └── enum Val: pub(self)
-└── mod notifications: pub
-    ├── struct Daemon: pub(self)
-    ├── struct Notification: pub
-    ├── struct NotificationsState: pub
-    └── type Notify: pub(self)
+├── mod notifications: pub
+│   ├── struct Daemon: pub(self)
+│   ├── struct Notification: pub
+│   ├── struct NotificationsState: pub
+│   └── type Notify: pub(self)
+└── mod tray: pub
+    ├── struct Host: pub(self)
+    ├── type Notify: pub(self)
+    ├── struct TrayItem: pub
+    └── struct TrayState: pub
 ```
 
 ### `moonshell-surface`

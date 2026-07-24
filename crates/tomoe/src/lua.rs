@@ -2477,6 +2477,7 @@ impl LuaRuntime {
         network: Option<&moonshell_services::network::NetworkState>,
         mpris: Option<&moonshell_services::mpris::MprisState>,
         notifications: Option<&moonshell_services::notifications::NotificationsState>,
+        tray: Option<&moonshell_services::tray::TrayState>,
     ) {
         use moonshell_runtime::services_bridge as bridge;
         let _watchdog = self.watchdog();
@@ -2498,6 +2499,11 @@ impl LuaRuntime {
         if let Some(s) = notifications {
             if let Err(e) = bridge::push_notifications(&self.lua, s) {
                 tracing::debug!("pushing notifications state: {e}");
+            }
+        }
+        if let Some(s) = tray {
+            if let Err(e) = bridge::push_tray(&self.lua, s) {
+                tracing::debug!("pushing tray state: {e}");
             }
         }
     }

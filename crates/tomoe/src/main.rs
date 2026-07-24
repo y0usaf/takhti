@@ -181,6 +181,17 @@ fn main() -> Result<()> {
     ) {
         info!("notification daemon off: {err}");
     }
+    // SNI tray host (FUSION F3): the compositor is watcher and host;
+    // item state reaches Lua tray widgets, menus land at F4.
+    if let Err(err) = moonshell_services::tray::start(
+        &event_loop.handle(),
+        |tomoe: &mut state::Tomoe, snapshot| {
+            tomoe.shell_tray = Some(snapshot.clone());
+            tomoe.push_shell_services();
+        },
+    ) {
+        info!("tray host off: {err}");
+    }
 
     let use_winit = match args.backend.as_str() {
         "winit" => true,

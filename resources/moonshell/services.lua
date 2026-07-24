@@ -140,4 +140,11 @@ M.define("notifications", {
     notifications = {},
 })
 
+-- Backed natively since FUSION F3: the compositor owns the SNI
+-- watcher/host. Item menus arrive with F4 interactivity.
+--   items  { { service, id, title, status, icon_name }, ... }
+M.define("tray", {
+    items = {},
+})
+
 return M

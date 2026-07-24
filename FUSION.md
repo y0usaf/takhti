@@ -219,21 +219,46 @@ The `ui.*` vocabulary lands in tomoe's VM; a config can declare a bar.
 
 moonshell M3's native services attach to tomoe's calloop.
 
-- [ ] `moonshell-services` sources (rustbus D-Bus: UPower, MPRIS,
+- [x] `moonshell-services` sources (rustbus D-Bus: UPower, MPRIS,
       NetworkManager, PowerProfiles; sysfs battery) ride tomoe's event
       loop; state published into Lua as snapshots on change
       (`shell.services.*`).
-- [ ] Notification daemon (org.freedesktop.Notifications) hosted
+      *Done 2026-07-24: battery/network/mpris fds ride tomoe's calloop
+      from main; snapshots push under the watchdog and re-seed the
+      fresh VM after reload. PowerProfiles was never built standalone —
+      it re-homes with the M5/M6 remainders (F6). Verified live:
+      real SSID, battery %, track title in the fixture bar.*
+- [x] Notification daemon (org.freedesktop.Notifications) hosted
       in-process; notification popups are a Lua builtin module on
       `ui.*` (doctrine 01 — replaceable from config).
-- [ ] SNI tray host; tray state exposed to Lua (menus consumed in F4).
-- [ ] Delete `moonshell-services`' compositor-backend abstraction (tomoe/
+      *Done: rustbus server (Notify/Close/capabilities/expiry timers,
+      graceful loss of the name to an external daemon);
+      `moonshell.notifications` builtin renders intrinsic-sized popup
+      cards the default config setup()s. Verified: notify-send pops
+      Lua-rendered cards; critical urgency restyles.*
+- [x] SNI tray host; tray state exposed to Lua (menus consumed in F4).
+      *Done: the compositor owns org.kde.StatusNotifierWatcher and acts
+      as host; items (service/id/title/status/icon_name) publish to
+      `shell.services.tray`; NameOwnerChanged drops dead items.
+      Icon-name only for now (pixmap arrays recorded as a gap);
+      activation + dbusmenu land at F4. Verified: a registered item
+      reaches a Lua bar.*
+- [x] Delete `moonshell-services`' compositor-backend abstraction (tomoe/
       niri/Hyprland/Sway IPC clients) — workspaces are now read
       in-VM; the `wm_state` broadcast stays for external consumers.
+      *Done: module deleted (−1760 lines, tomoe-ipc/serde_json deps
+      dropped); wm.lua announce() feeds `shell.services.compositor`
+      in-VM alongside the broadcast and seeds at require time. The
+      workspaces widget renders from wm state with zero IPC.*
       *Accept: a bar with clock/battery/workspaces/network/mpris
       live-updates with zero subprocess spawns in steady state
       (execsnoop-clean for 5 min) and zero idle wakeups beyond timers;
       `notify-send` pops a Lua-rendered notification.*
+      *Accept status: all paths are subprocess-free by construction
+      (rustbus fds + sysfs, no CLI polling anywhere) and verified
+      nested for live updates + notify-send; the 5-minute
+      execsnoop/wakeup soak on real hardware rides the next tty
+      daily-drive session.*
 
 ## F4 — interactive compositor UI
 

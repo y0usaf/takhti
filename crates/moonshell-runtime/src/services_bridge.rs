@@ -72,6 +72,23 @@ pub fn push_notifications(
     set_service(lua, "notifications", t)
 }
 
+/// `shell.services.tray:set(snapshot)`.
+pub fn push_tray(lua: &Lua, state: &moonshell_services::tray::TrayState) -> LuaResult<()> {
+    let t = lua.create_table()?;
+    let list = lua.create_table()?;
+    for (i, item) in state.items.iter().enumerate() {
+        let it = lua.create_table()?;
+        it.set("service", item.service.as_str())?;
+        it.set("id", item.id.as_str())?;
+        it.set("title", item.title.as_str())?;
+        it.set("status", item.status.as_str())?;
+        it.set("icon_name", item.icon_name.as_str())?;
+        list.set(i + 1, it)?;
+    }
+    t.set("items", list)?;
+    set_service(lua, "tray", t)
+}
+
 fn set_service(lua: &Lua, name: &str, snapshot: LuaTable) -> LuaResult<()> {
     let shell: LuaTable = lua.globals().get("shell")?;
     let services: LuaTable = shell.get("services")?;
