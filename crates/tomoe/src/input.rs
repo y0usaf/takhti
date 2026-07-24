@@ -258,6 +258,23 @@ impl Tomoe {
         None
     }
 
+    /// Like [`Self::output_local_point`], also naming the output — the
+    /// shell-surface hit path needs the per-output texture key.
+    fn output_named_local_point(
+        &self,
+        pos: smithay::utils::Point<f64, smithay::utils::Physical>,
+    ) -> Option<(String, smithay::utils::Point<f64, smithay::utils::Physical>)> {
+        for output in self.space.outputs() {
+            let Some(geo) = self.space.output_geometry(output) else {
+                continue;
+            };
+            if geo.to_f64().contains(pos) {
+                return Some((output.name(), pos - geo.loc.to_f64()));
+            }
+        }
+        None
+    }
+
     /// The pointer position in the screenshot overlay's output-local
     /// physical coordinates, clamped to the output bounds. None when the
     /// overlay is closed or its output lost its geometry.
@@ -689,6 +706,29 @@ impl Tomoe {
                         }
                     }
                     return;
+                }
+
+                // Native shell surfaces (FUSION F4): a press inside a
+                // surface rect is consumed by the shell — the deepest
+                // on_click along the element hit path fires in Lua.
+                if pressed {
+                    let pos = self.space.point_to_physical(pointer.current_location());
+                    if let Some((name, local)) = self.output_named_local_point(pos) {
+                        if let Some((shared, path)) =
+                            self.shell.click_target(&name, (local.x, local.y))
+                        {
+                            self.consumed_buttons.insert(button);
+                            if button == BTN_LEFT {
+                                self.sync_snapshot();
+                                let was_in_lua = self.in_lua;
+                                self.in_lua = true;
+                                self.lua.click_shell(&shared, &path);
+                                self.in_lua = was_in_lua;
+                                self.after_lua();
+                            }
+                            return;
+                        }
+                    }
                 }
 
                 // A Lua pointer grab ends on any release; presses during it

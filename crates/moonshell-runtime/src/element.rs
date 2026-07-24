@@ -262,6 +262,40 @@ fn parse_padding(table: &LuaTable) -> LuaResult<Edges> {
 
 /// Sequential `children` table. Nil entries (from `ui.when`) and
 /// non-table entries are skipped, matching nur.
+/// Collect `on_click` handlers from an element table tree, keyed by
+/// the child-index path ("" = root, "0.2" = root.children[0].children[2]).
+/// Walks the same recursion shape as [`parse_children`] (non-table
+/// entries skipped identically), so paths align with the parsed
+/// [`Element`] tree — and with [`Scene::hit_path`].
+///
+/// [`Scene::hit_path`]: moonshell_render::Scene::hit_path
+pub fn collect_handlers(
+    table: &LuaTable,
+    path: &mut Vec<usize>,
+    out: &mut Vec<(String, LuaFunction)>,
+) -> LuaResult<()> {
+    if let Some(f) = table.get::<Option<LuaFunction>>("on_click")? {
+        let key = path
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(".");
+        out.push((key, f));
+    }
+    if let LuaValue::Table(children) = table.get::<LuaValue>("children")? {
+        let mut index = 0;
+        for i in 1..=children.raw_len() {
+            if let LuaValue::Table(ct) = children.get::<LuaValue>(i)? {
+                path.push(index);
+                collect_handlers(&ct, path, out)?;
+                path.pop();
+                index += 1;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn parse_children(table: &LuaTable, inherited: TextDefaults) -> LuaResult<Vec<Element>> {
     let val: LuaValue = table.get("children")?;
     match val {

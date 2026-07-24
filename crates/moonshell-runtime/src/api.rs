@@ -190,6 +190,7 @@ pub fn register_shell(lua: &Lua, ctx: &Rc<ShellCtx>) -> LuaResult<()> {
                 render_key: None,
                 bg: opts.bg,
                 text: opts.text,
+                handlers: Default::default(),
             }));
             if let Some(name) = opts.name {
                 c.named.borrow_mut().insert(name, shared.clone());

@@ -250,6 +250,38 @@ impl ShellSurfaces {
         changed
     }
 
+    /// Hit-test an output-local physical point against the surfaces
+    /// (topmost = last declared). `Some` = the point is on a native
+    /// shell surface: the window handle plus the dotted element path
+    /// under the point (for handler lookup). Clicks on a surface are
+    /// consumed by the caller whether or not a handler exists.
+    pub fn click_target(
+        &self,
+        output_name: &str,
+        point: (f64, f64),
+    ) -> Option<(Rc<RefCell<WindowShared>>, String)> {
+        for s in self.surfaces.iter().rev() {
+            let Some(t) = s.per_output.get(output_name) else {
+                continue;
+            };
+            let rect = t.rect;
+            let (lx, ly) = (point.0 - rect.loc.x as f64, point.1 - rect.loc.y as f64);
+            if lx < 0.0 || ly < 0.0 || lx >= rect.size.w as f64 || ly >= rect.size.h as f64 {
+                continue;
+            }
+            let path = t
+                .tex
+                .hit_path(lx as f32, ly as f32)
+                .unwrap_or_default()
+                .iter()
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(".");
+            return Some((s.shared.clone(), path));
+        }
+        None
+    }
+
     /// Composite the cached textures for one output (topmost first, to
     /// match the callers' prepend order). Pure texture work — no Lua.
     pub fn render_elements<R: TomoeRenderer>(
@@ -319,11 +351,72 @@ mod tests {
                 render_key: None,
                 bg: moonshell_render::Rgba::new(0, 0, 0, 255),
                 text: Default::default(),
+                handlers: Default::default(),
             })),
         }]);
         // Usable area loses the 32 logical px at the top.
         let zone = shell.shrink_zone(Rectangle::new((0, 0).into(), (1280, 720).into()));
         assert_eq!(zone, Rectangle::new((0, 32).into(), (1280, 688).into()));
+    }
+
+    /// FUSION F4: a click resolves through the retained layout to the
+    /// deepest on_click handler, bubbling to ancestors, in one VM.
+    #[test]
+    fn click_path_reaches_lua_handler() {
+        let mut rt = crate::lua::LuaRuntime::new().unwrap();
+        rt.lua()
+            .load(
+                r#"
+                clicked = 0
+                local win = shell.window({ position = "top", height = 30 })
+                win:render(function()
+                  return ui.hbox({ children = {
+                    ui.text({ content = "left", width = 50, height = 30 }),
+                    ui.button({
+                      width = 50,
+                      height = 30,
+                      on_click = function() clicked = clicked + 1 end,
+                      children = { ui.text("btn") },
+                    }),
+                  }})
+                end)
+                "#,
+            )
+            .exec()
+            .unwrap();
+        let ctx = rt.shell_ctx();
+        let pending = ctx.take_pending();
+        let shared = pending[0].shared.clone();
+        let root = rt.render_shell_root(&shared).unwrap();
+        assert!(
+            shared.borrow().handlers.contains_key("0.1"),
+            "button handler keyed by its element path"
+        );
+
+        let mut engine = Engine::new();
+        let mut tex = TreeTexture::new();
+        tex.update(&mut engine, &root, Size::from((200, 30)), 1.0)
+            .unwrap();
+
+        // Inside the button (second 50px cell): bubbles to "0.1".
+        let path = tex.hit_path(75.0, 15.0).unwrap();
+        let key = path
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(".");
+        assert!(rt.click_shell(&shared, &key));
+        let clicked: i32 = rt.lua().globals().get("clicked").unwrap();
+        assert_eq!(clicked, 1);
+
+        // Plain text cell: on the surface, but no handler anywhere up.
+        let path = tex.hit_path(25.0, 15.0).unwrap();
+        let key = path
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(".");
+        assert!(!rt.click_shell(&shared, &key));
     }
 
     #[test]

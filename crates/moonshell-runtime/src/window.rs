@@ -61,6 +61,9 @@ pub struct WindowShared {
     pub render_key: Option<LuaRegistryKey>,
     pub bg: Rgba,
     pub text: TextDefaults,
+    /// `on_click` handlers of the last rendered tree, keyed by element
+    /// path (see `element::collect_handlers`); refreshed per render.
+    pub handlers: std::collections::HashMap<String, LuaRegistryKey>,
 }
 
 /// The userdata `shell.window` returns. `handle:render(fn)` stores the

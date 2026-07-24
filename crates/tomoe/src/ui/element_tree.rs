@@ -99,6 +99,12 @@ impl TreeTexture {
         &self.buffer
     }
 
+    /// Hit-test a texture-local physical point against the retained
+    /// tree (FUSION F4): the deepest element path under the point.
+    pub fn hit_path(&self, x: f32, y: f32) -> Option<Vec<usize>> {
+        self.scene.hit_path(x, y)
+    }
+
     /// Re-raster for a (possibly) new tree at `size`/`scale`. The scene
     /// cache makes the unchanged case free (no draw, no damage) and the
     /// small-change case cheap on the upload side (only diffed rects

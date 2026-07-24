@@ -2457,6 +2457,25 @@ impl LuaRuntime {
                     return None;
                 }
             }
+            // Collect on_click handlers keyed by element path (FUSION
+            // F4). The user root is child 0 of the window's bg stack,
+            // so paths gain that prefix to match Scene::hit_path.
+            let mut collected = Vec::new();
+            if let Err(err) =
+                moonshell_runtime::element::collect_handlers(&table, &mut vec![0], &mut collected)
+            {
+                warn!("shell handler collection failed: {err}");
+            }
+            let mut handlers = std::collections::HashMap::new();
+            for (path, f) in collected {
+                match self.lua.create_registry_value(f) {
+                    Ok(key) => {
+                        handlers.insert(path, key);
+                    }
+                    Err(err) => warn!("shell handler registry: {err}"),
+                }
+            }
+            shared.borrow_mut().handlers = handlers;
         }
         Some(moonshell_render::Element::Stack(Stack {
             style: Style {
@@ -2505,6 +2524,40 @@ impl LuaRuntime {
             if let Err(e) = bridge::push_tray(&self.lua, s) {
                 tracing::debug!("pushing tray state: {e}");
             }
+        }
+    }
+
+    /// Dispatch a click on a shell surface (FUSION F4): fire the
+    /// deepest `on_click` along the hit path (bubbling to ancestors),
+    /// under the watchdog. Returns true when a handler ran.
+    pub fn click_shell(&mut self, shared: &Rc<RefCell<WindowShared>>, path: &str) -> bool {
+        let key_fn = {
+            let s = shared.borrow();
+            let mut probe: &str = path;
+            loop {
+                if let Some(key) = s.handlers.get(probe) {
+                    break Some(self.lua.registry_value::<Function>(key));
+                }
+                match probe.rfind('.') {
+                    Some(idx) => probe = &probe[..idx],
+                    None if !probe.is_empty() => probe = "",
+                    None => break None,
+                }
+            }
+        };
+        match key_fn {
+            Some(Ok(f)) => {
+                let _watchdog = self.watchdog();
+                if let Err(err) = f.call::<()>(()) {
+                    warn!("shell on_click failed: {err}");
+                }
+                true
+            }
+            Some(Err(err)) => {
+                warn!("shell on_click registry lookup: {err}");
+                false
+            }
+            None => false,
         }
     }
 

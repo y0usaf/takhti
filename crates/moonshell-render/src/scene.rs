@@ -78,6 +78,40 @@ impl Scene {
         self.prev = None;
     }
 
+    /// Deepest element path containing the physical-px point, walked
+    /// against the retained frame (the hit-testing input M4 promised).
+    /// A path is the child-index chain from the root (empty = the root
+    /// itself); later siblings win (stack overlays draw last). None:
+    /// no retained frame, or the point misses the canvas.
+    pub fn hit_path(&self, x: f32, y: f32) -> Option<Vec<usize>> {
+        let frame = self.prev.as_ref()?;
+        fn contains(r: &crate::layout::Rect, x: f32, y: f32) -> bool {
+            x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h
+        }
+        if !contains(&frame.layout.rect, x, y) {
+            return None;
+        }
+        let mut path = Vec::new();
+        let (mut el, mut node) = (&frame.root, &frame.layout);
+        loop {
+            let child = el
+                .children()
+                .iter()
+                .zip(&node.children)
+                .enumerate()
+                .rev()
+                .find(|(_, (_, cn))| contains(&cn.rect, x, y));
+            match child {
+                Some((i, (c, cn))) => {
+                    path.push(i);
+                    el = c;
+                    node = cn;
+                }
+                None => return Some(path),
+            }
+        }
+    }
+
     /// Layout and draw `root`, returning damage relative to the
     /// previous `render` call. The canvas is repainted in full whenever
     /// the damage is non-`None` (see module docs), so pixels outside
