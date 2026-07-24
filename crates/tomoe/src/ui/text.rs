@@ -206,9 +206,9 @@ impl Canvas {
             let idx = ((row * self.width + col) * 4) as usize;
             // Premultiplied src-over: dst = src*cov + dst*(1 - src.a*cov)
             let src = [color[0] * a, color[1] * a, color[2] * a, color[3] * a];
-            for c in 0..4 {
+            for (c, s) in src.iter().enumerate() {
                 let dst = self.data[idx + c] as f32 / 255.0;
-                let out = src[c] * color[3] + dst * (1.0 - color[3] * a);
+                let out = s * color[3] + dst * (1.0 - color[3] * a);
                 self.data[idx + c] = (out.clamp(0.0, 1.0) * 255.0) as u8;
             }
         }

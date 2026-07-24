@@ -780,11 +780,9 @@ impl Tomoe {
         }
 
         // Initial configure for popups.
-        if let Some(popup) = self.popups.find_popup(surface) {
-            if let PopupKind::Xdg(popup) = &popup {
-                if !popup.is_initial_configure_sent() {
-                    let _ = popup.send_configure();
-                }
+        if let Some(PopupKind::Xdg(popup)) = self.popups.find_popup(surface) {
+            if !popup.is_initial_configure_sent() {
+                let _ = popup.send_configure();
             }
         }
     }

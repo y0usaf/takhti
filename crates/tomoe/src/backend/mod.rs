@@ -8,6 +8,8 @@ pub use tty::TtyData;
 pub use winit::WinitData;
 
 /// Active backend: winit (nested dev window) or TTY (DRM/GBM real hardware).
+// One instance for the process lifetime; the variant size gap is irrelevant.
+#[allow(clippy::large_enum_variant)]
 pub enum Backend {
     Uninit,
     Winit(WinitData),

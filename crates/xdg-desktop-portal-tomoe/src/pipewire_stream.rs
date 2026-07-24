@@ -969,7 +969,7 @@ fn build_video_format_param(
         denom: 1,
     };
     let preferred_framerate = Fraction {
-        num: spec.framerate.max(1).min(60),
+        num: spec.framerate.clamp(1, 60),
         denom: 1,
     };
     let obj = Value::Object(Object {

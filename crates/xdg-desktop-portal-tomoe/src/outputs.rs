@@ -73,16 +73,14 @@ impl Dispatch<wl_output::WlOutput, ()> for Enumerator {
                 width,
                 height,
                 refresh,
-            } => {
-                if flags
-                    .into_result()
-                    .map(|f| f.contains(wl_output::Mode::Current))
-                    .unwrap_or(false)
-                {
-                    cur.width = width;
-                    cur.height = height;
-                    cur.refresh_mhz = refresh;
-                }
+            } if flags
+                .into_result()
+                .map(|f| f.contains(wl_output::Mode::Current))
+                .unwrap_or(false) =>
+            {
+                cur.width = width;
+                cur.height = height;
+                cur.refresh_mhz = refresh;
             }
             wl_output::Event::Done => {
                 if let Some(info) = state.pending.remove(&id) {
