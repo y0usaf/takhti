@@ -13,6 +13,14 @@ Internal (workspace-local) dependencies only. `A --> B` means A depends on B.
 
 ```mermaid
 graph TD
+  moonshell["moonshell"] --> moonshell_render["moonshell-render"]
+  moonshell["moonshell"] --> moonshell_runtime["moonshell-runtime"]
+  moonshell["moonshell"] --> moonshell_services["moonshell-services"]
+  moonshell["moonshell"] --> moonshell_surface["moonshell-surface"]
+  moonshell_runtime["moonshell-runtime"] --> moonshell_render["moonshell-render"]
+  moonshell_runtime["moonshell-runtime"] --> moonshell_services["moonshell-services"]
+  moonshell_runtime["moonshell-runtime"] --> moonshell_surface["moonshell-surface"]
+  moonshell_services["moonshell-services"] --> tomoe_ipc["tomoe-ipc"]
   tomoe["tomoe"] --> tomoe_ipc["tomoe-ipc"]
   xdg_desktop_portal_tomoe["xdg-desktop-portal-tomoe"] --> tomoe_ipc["tomoe-ipc"]
 ```
@@ -21,6 +29,11 @@ graph TD
 
 | Crate | Description |
 |-------|-------------|
+| `moonshell` | _no description in Cargo.toml_ |
+| `moonshell-render` | _no description in Cargo.toml_ |
+| `moonshell-runtime` | _no description in Cargo.toml_ |
+| `moonshell-services` | _no description in Cargo.toml_ |
+| `moonshell-surface` | _no description in Cargo.toml_ |
 | `tomoe` | _no description in Cargo.toml_ |
 | `tomoe-ipc` | _no description in Cargo.toml_ |
 | `xdg-desktop-portal-tomoe` | _no description in Cargo.toml_ |
@@ -29,6 +42,164 @@ graph TD
 
 Per-crate module/item trees (`cargo modules structure`). Functions are
 omitted; types, traits, and module boundaries are the architecture.
+
+### `moonshell`
+
+```
+
+crate moonshell
+├── struct Engine: pub(crate)
+├── struct VersionBar: pub(crate)
+└── mod watcher: pub(crate)
+    ├── struct DirWatch: pub(self)
+    └── struct Watcher: pub
+```
+
+### `moonshell-render`
+
+```
+
+crate moonshell_render
+├── struct Renderer: pub
+├── struct Rgba: pub
+├── mod assets: pub(crate)
+│   ├── struct AssetCache: pub(crate)
+│   └── struct IconKey: pub(self)
+├── mod draw: pub
+├── mod element: pub
+│   ├── enum Align: pub
+│   ├── struct CircularProgress: pub
+│   ├── struct Edges: pub
+│   ├── enum Element: pub
+│   ├── struct Flex: pub
+│   ├── struct Icon: pub
+│   ├── struct Image: pub
+│   ├── enum Justify: pub
+│   ├── enum Orientation: pub
+│   ├── struct Progress: pub
+│   ├── struct Separator: pub
+│   ├── struct Spacer: pub
+│   ├── struct Stack: pub
+│   ├── struct Style: pub
+│   └── struct Text: pub
+├── mod layout: pub
+│   ├── enum Axis: pub(self)
+│   ├── struct LayoutNode: pub
+│   └── struct Rect: pub
+└── mod scene: pub
+    ├── struct Frame: pub(self)
+    ├── struct PixelRect: pub
+    ├── struct Scene: pub
+    └── enum SceneDamage: pub
+```
+
+### `moonshell-runtime`
+
+```
+
+crate moonshell_runtime
+├── struct Vm: pub
+├── mod api: pub
+│   ├── struct PendingWindow: pub
+│   └── struct ShellCtx: pub
+├── mod element: pub
+│   └── struct TextDefaults: pub
+├── mod exec: pub
+│   ├── struct ExecCallback: pub(crate)
+│   └── struct ExecReply: pub
+├── mod painter: pub
+│   └── struct LuaPainter: pub
+├── mod services_bridge: pub
+├── mod state: pub
+│   ├── struct LuaState: pub
+│   ├── type Notifier: pub(self)
+│   └── struct StateInner: pub(self)
+├── mod timer: pub
+│   └── struct PendingTimer: pub
+├── mod watch: pub
+│   ├── struct PendingWatch: pub
+│   └── struct WatchCallback: pub
+└── mod window: pub
+    ├── struct WindowHandle: pub
+    ├── struct WindowOpts: pub
+    └── struct WindowShared: pub
+```
+
+### `moonshell-services`
+
+```
+
+crate moonshell_services
+├── mod battery: pub
+│   ├── struct BatteryState: pub
+│   ├── struct Model: pub(self)
+│   ├── type Notify: pub(self)
+│   ├── enum Prop: pub(self)
+│   ├── enum Source: pub
+│   └── struct Upower: pub(self)
+├── mod compositor: pub
+│   ├── enum Compositor: pub
+│   ├── struct CompositorState: pub
+│   ├── enum Error: pub
+│   ├── struct KeyboardActivity: pub
+│   ├── enum KeyboardHand: pub
+│   ├── type Notify: pub(self)
+│   ├── struct Workspace: pub
+│   ├── mod hyprland: pub
+│   │   └── struct Backend: pub(self)
+│   ├── mod niri: pub
+│   │   ├── struct Backend: pub(self)
+│   │   ├── struct Model: pub(self)
+│   │   ├── struct Win: pub(self)
+│   │   └── struct Ws: pub(self)
+│   ├── mod sway: pub
+│   │   └── struct Backend: pub(self)
+│   ├── mod tomoe: pub
+│   │   ├── struct Backend: pub(self)
+│   │   └── struct Model: pub(self)
+│   └── mod wire: pub(self)
+├── mod dbus: pub(crate)
+│   ├── struct Dbl: pub(crate)
+│   └── enum DbusError: pub
+├── mod mpris: pub
+│   ├── struct Model: pub(self)
+│   ├── struct Mpris: pub(self)
+│   ├── struct MprisState: pub
+│   ├── type Notify: pub(self)
+│   ├── enum Pending: pub(self)
+│   └── struct Player: pub(self)
+└── mod network: pub
+    ├── struct Model: pub(self)
+    ├── struct NetworkState: pub
+    ├── struct Nm: pub(self)
+    ├── type Notify: pub(self)
+    ├── enum Query: pub(self)
+    ├── enum Scope: pub(self)
+    ├── enum Source: pub
+    └── enum Val: pub(self)
+```
+
+### `moonshell-surface`
+
+```
+
+crate moonshell_surface
+├── struct Anchors: pub
+├── struct Canvas: pub
+├── enum Damage: pub
+├── struct DamageRect: pub
+├── struct DisplayInfo: pub
+├── enum Edge: pub
+├── enum Keyboard: pub
+├── enum Layer: pub
+├── struct LayerOptions: pub
+├── struct Margins: pub
+├── trait Painter: pub
+├── struct Shell: pub
+├── enum SurfaceError: pub
+├── struct Window: pub(crate)
+└── struct WindowId: pub
+```
 
 ### `tomoe`
 
