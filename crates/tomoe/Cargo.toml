@@ -15,6 +15,9 @@ fontdue = "0.9"
 glam = "0.30"
 jiff = "0.2"
 mlua = { version = "0.10", features = ["luajit", "vendored", "serialize"] }
+# The fused shell's element engine (FUSION.md F1): element trees raster
+# on the CPU and composite as damage-tracked textures.
+moonshell-render.workspace = true
 png = "0.17"
 serde_json.workspace = true
 smithay-drm-extras.workspace = true

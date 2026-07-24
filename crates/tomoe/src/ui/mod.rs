@@ -3,6 +3,7 @@
 //! involved). Everything but the screenshot overlay lives in the retained
 //! widget registry (`widgets.rs`, the `tomoe.ui` surface).
 
+pub mod element_tree;
 mod screenshot_ui;
 pub mod text;
 pub mod widgets;
@@ -28,6 +29,9 @@ pub const BACKDROP: [f32; 4] = [0.0, 0.0, 0.0, 0.4];
 pub struct Ui {
     /// None if no usable font was found; UI elements are skipped.
     fonts: Option<Fonts>,
+    /// The element engine (FUSION F1): cosmic-text fonts and glyph/asset
+    /// caches shared by every element-tree texture.
+    pub engine: element_tree::Engine,
     pub widgets: Widgets,
     pub screenshot: ScreenshotUi,
 }
@@ -43,6 +47,7 @@ impl Ui {
         };
         Self {
             fonts,
+            engine: element_tree::Engine::new(),
             widgets: Widgets::default(),
             screenshot: ScreenshotUi::new(),
         }
@@ -78,8 +83,15 @@ impl Ui {
         let Some(fonts) = &self.fonts else {
             return elements;
         };
-        self.widgets
-            .render_elements(fonts, renderer, output_size, &mut elements);
+        let scale = output.current_scale().fractional_scale() as f32;
+        self.widgets.render_elements(
+            fonts,
+            &mut self.engine,
+            renderer,
+            output_size,
+            scale,
+            &mut elements,
+        );
         elements
     }
 

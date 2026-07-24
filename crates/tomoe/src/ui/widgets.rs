@@ -16,6 +16,12 @@ use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRen
 use smithay::backend::renderer::element::Kind;
 use smithay::utils::{Physical, Point, Size};
 
+use moonshell_render::element::{
+    Align as MoonAlign, Edges, Flex, Style as MoonStyle, Text as TreeText,
+};
+use moonshell_render::{Element, Rgba};
+
+use super::element_tree::{Engine, TreeTexture};
 use super::text::{Canvas, Fonts, Span};
 use super::{ACCENT, BACKDROP, BG, FG, KEY_CHIP, RED};
 use crate::input::{Action, Bind};
@@ -141,6 +147,9 @@ pub struct WidgetEntry {
     pub tag: Option<Tag>,
     /// Cached rendering; dropped when content changes (menu navigation).
     buffer: Option<(MemoryRenderBuffer, Size<i32, Physical>)>,
+    /// Element-engine texture for tree-backed kinds (Confirm, FUSION F1).
+    /// Never invalidated by hand: the scene cache diffs trees itself.
+    tree: Option<TreeTexture>,
     /// Cached menu geometry for pointer hit-testing. Unlike `buffer` it
     /// survives `invalidate`: selection changes recolor rows, never move
     /// them, so hit tests don't wait on a repaint.
@@ -155,6 +164,7 @@ impl WidgetEntry {
             handler,
             tag,
             buffer: None,
+            tree: None,
             layout: None,
         }
     }
@@ -370,8 +380,10 @@ impl Widgets {
     pub fn render_elements<R: TomoeRenderer>(
         &mut self,
         fonts: &Fonts,
+        engine: &mut Engine,
         renderer: &mut R,
         output_size: Size<i32, Physical>,
+        scale: f32,
         elements: &mut Vec<OutputRenderElements<R>>,
     ) {
         let now = Instant::now();
@@ -383,11 +395,27 @@ impl Widgets {
         let mut toast_y = TOAST_MARGIN_TOP;
         for i in (0..self.entries.len()).rev() {
             let entry = &mut self.entries[i];
-            if entry.buffer.is_none() {
-                entry.buffer = Some(render_widget(fonts, &entry.kind));
-            }
-            let Some((buffer, size)) = &entry.buffer else {
-                continue;
+            let (buffer, size) = match &entry.kind {
+                // Tree-backed kinds raster through the element engine
+                // at the output's (fractional) scale; the scene cache
+                // makes the unchanged case free and small changes
+                // upload only their diffed rects (FUSION F1).
+                WidgetKind::Confirm { text } => {
+                    let root = confirm_tree(text);
+                    let size = engine.measure(&root, scale);
+                    let tex = entry.tree.get_or_insert_with(TreeTexture::new);
+                    tex.update(engine, &root, size, scale);
+                    (tex.buffer(), size)
+                }
+                _ => {
+                    if entry.buffer.is_none() {
+                        entry.buffer = Some(render_widget(fonts, &entry.kind));
+                    }
+                    let Some((buffer, size)) = &entry.buffer else {
+                        continue;
+                    };
+                    (buffer, *size)
+                }
             };
             let loc = match entry.kind {
                 WidgetKind::Toast { .. } => {
@@ -432,7 +460,11 @@ impl Widgets {
 
 fn render_widget(fonts: &Fonts, kind: &WidgetKind) -> (MemoryRenderBuffer, Size<i32, Physical>) {
     match kind {
-        WidgetKind::Confirm { text } => render_confirm(fonts, text),
+        // Confirm rasters through the element engine in
+        // `render_elements` (FUSION F1); it never reaches the Canvas path.
+        WidgetKind::Confirm { .. } => {
+            unreachable!("confirm renders through the element engine")
+        }
         WidgetKind::Menu {
             title,
             items,
@@ -443,35 +475,61 @@ fn render_widget(fonts: &Fonts, kind: &WidgetKind) -> (MemoryRenderBuffer, Size<
     }
 }
 
-fn render_confirm(fonts: &Fonts, text: &str) -> (MemoryRenderBuffer, Size<i32, Physical>) {
-    let line1 = [Span::sans(text, CONFIRM_SIZE, FG)];
-    let line2 = [
-        Span::sans("Press ", CONFIRM_SIZE, FG),
-        Span::key(" Enter ", CONFIRM_SIZE, FG, KEY_CHIP),
-        Span::sans(" to confirm.", CONFIRM_SIZE, FG),
-    ];
-    let (w1, h1) = fonts.measure(&line1);
-    let (w2, h2) = fonts.measure(&line2);
-    let gap = (CONFIRM_SIZE * 0.6) as i32;
+/// The confirm dialog as an element tree (FUSION F1's proof-of-fusion):
+/// the border is a padded outer box, the key chip a text background —
+/// all logical px, resolved to integer physical pixels in layout.
+fn confirm_tree(text: &str) -> Element {
+    let chip_text = |content: &str, chip: Option<[f32; 4]>| {
+        Element::Text(TreeText {
+            style: MoonStyle {
+                bg: chip.map(rgba),
+                ..Default::default()
+            },
+            content: content.into(),
+            size: CONFIRM_SIZE,
+            color: rgba(FG),
+            ..Default::default()
+        })
+    };
+    let line2 = Element::HBox(Flex {
+        align: MoonAlign::Center,
+        children: vec![
+            chip_text("Press ", None),
+            chip_text(" Enter ", Some(KEY_CHIP)),
+            chip_text(" to confirm.", None),
+        ],
+        ..Default::default()
+    });
+    Element::VBox(Flex {
+        style: MoonStyle {
+            bg: Some(rgba(RED)),
+            ..Default::default()
+        },
+        padding: Edges::all(CONFIRM_BORDER as f32),
+        children: vec![Element::VBox(Flex {
+            style: MoonStyle {
+                bg: Some(rgba(BG)),
+                ..Default::default()
+            },
+            padding: Edges::all(CONFIRM_PADDING as f32),
+            gap: CONFIRM_SIZE * 0.6,
+            align: MoonAlign::Center,
+            children: vec![chip_text(text, None), line2],
+            ..Default::default()
+        })],
+        ..Default::default()
+    })
+}
 
-    let width = w1.max(w2) + 2 * (CONFIRM_PADDING + CONFIRM_BORDER);
-    let height = h1 + gap + h2 + 2 * (CONFIRM_PADDING + CONFIRM_BORDER);
-    let mut canvas = Canvas::new(width, height);
-    canvas.fill(BG);
-    canvas.border(CONFIRM_BORDER, RED);
-    canvas.draw_spans(
-        fonts,
-        (width - w1) / 2,
-        CONFIRM_BORDER + CONFIRM_PADDING,
-        &line1,
-    );
-    canvas.draw_spans(
-        fonts,
-        (width - w2) / 2,
-        CONFIRM_BORDER + CONFIRM_PADDING + h1 + gap,
-        &line2,
-    );
-    canvas.into_buffer()
+/// Palette color → element-engine color. The palette's straight and
+/// premultiplied forms coincide (every tree color is alpha 1.0).
+fn rgba(c: [f32; 4]) -> Rgba {
+    Rgba::new(
+        (c[0] * 255.0) as u8,
+        (c[1] * 255.0) as u8,
+        (c[2] * 255.0) as u8,
+        (c[3] * 255.0) as u8,
+    )
 }
 
 fn render_menu(

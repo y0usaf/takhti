@@ -3220,6 +3220,7 @@ dependencies = [
  "glam",
  "jiff",
  "mlua",
+ "moonshell-render",
  "png 0.17.16",
  "serde_json",
  "smithay",

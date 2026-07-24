@@ -56,6 +56,14 @@ pub fn compute(
     place(root, rect, scale, renderer)
 }
 
+/// Intrinsic physical size of a tree, ceiled to whole pixels — for
+/// callers sizing a canvas around content (compositor dialogs) rather
+/// than filling a fixed surface.
+pub fn intrinsic_size(root: &Element, scale: f32, r: &mut Renderer) -> (u32, u32) {
+    let (w, h) = measure(root, scale, r);
+    (w.ceil().max(0.0) as u32, h.ceil().max(0.0) as u32)
+}
+
 /// Intrinsic physical size of an element (before grow/stretch).
 fn measure(el: &Element, scale: f32, r: &mut Renderer) -> (f32, f32) {
     let style = el.style();

@@ -20,7 +20,7 @@ pub mod scene;
 
 pub use draw::{draw, render_tree};
 pub use element::Element;
-pub use layout::LayoutNode;
+pub use layout::{intrinsic_size, LayoutNode};
 pub use scene::{PixelRect, Scene, SceneDamage};
 
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, SwashCache};

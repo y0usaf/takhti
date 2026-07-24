@@ -21,6 +21,7 @@ graph TD
   moonshell_runtime["moonshell-runtime"] --> moonshell_services["moonshell-services"]
   moonshell_runtime["moonshell-runtime"] --> moonshell_surface["moonshell-surface"]
   moonshell_services["moonshell-services"] --> tomoe_ipc["tomoe-ipc"]
+  tomoe["tomoe"] --> moonshell_render["moonshell-render"]
   tomoe["tomoe"] --> tomoe_ipc["tomoe-ipc"]
   xdg_desktop_portal_tomoe["xdg-desktop-portal-tomoe"] --> tomoe_ipc["tomoe-ipc"]
 ```
@@ -380,6 +381,9 @@ crate tomoe
 │       └── type TouchFocus: pub(self)
 ├── mod ui: pub(crate)
 │   ├── struct Ui: pub
+│   ├── mod element_tree: pub
+│   │   ├── struct Engine: pub
+│   │   └── struct TreeTexture: pub
 │   ├── mod screenshot_ui: pub(self)
 │   │   ├── struct ScreenshotUi: pub
 │   │   └── enum State: pub(self)

@@ -126,17 +126,24 @@ one workspace and all design docs tell the truth about what's coming.
 The shared raster stack becomes a tomoe render element. This is pure
 mechanism: no Lua surface change yet.
 
-- [ ] `moonshell-render` decoupled from `moonshell-surface`/SCTK (it should
+- [x] `moonshell-render` decoupled from `moonshell-surface`/SCTK (it should
       already be close: element tree in, tiny-skia pixmap out). Its
       damage diffing reports dirty rects per tree.
-- [ ] New tomoe render element: an element-tree texture. CPU raster
+      *Was already true at crate level (no surface dep); `Scene` diffs
+      per tree. Added `intrinsic_size` for content-hugging canvases.*
+- [x] New tomoe render element: an element-tree texture. CPU raster
       into a pixmap, GLES texture upload of dirty regions only,
       composited like any other element (respects camera transform,
       output scale, damage tracking). Rasterization happens on state
       change, never per-frame; a raster deadline is enforced the same
       way as the Lua watchdog (a slow tree logs and skips the frame's
       update rather than stalling the render loop).
-- [ ] Proof-of-fusion: one existing native UI piece (exit dialog or
+      *Done: `ui/element_tree.rs` — `Engine` (shared cosmic-text/asset
+      caches) + `TreeTexture` (`Scene` diff → `MemoryRenderBuffer`
+      partial damage → GLES uploads only dirty rects). Deadline: a
+      raster over 100 ms logs and throttles that tree's updates for 1 s
+      (main-thread raster per the recorded open decision).*
+- [x] Proof-of-fusion: one existing native UI piece (exit dialog or
       hotkey overlay) re-rendered through the element engine, its
       bespoke `ui/widgets` path deleted. cosmic-text replaces the
       hand-rolled `ui/text` Canvas for that piece.
@@ -145,6 +152,14 @@ mechanism: no Lua surface change yet.
       integer physical pixels before raster); damage-only redraw
       verified — an animating clock in a corner uploads only its own
       rect.*
+      *Done 2026-07-24: the exit/confirm dialog (`WidgetKind::Confirm`,
+      also the `tomoe.ui.confirm` surface) builds an element tree
+      (border = padded outer box, key chip = text bg) rastered at the
+      output's fractional scale; `render_confirm` and its Canvas path
+      deleted. Verified live under nested winit at scale 1.0 and 1.25
+      (screenshots crisp, no resampling). Damage-only: covered by
+      `scene::tests::leaf_change_damages_only_its_rect` and tomoe's
+      `element_tree::tests::corner_change_uploads_only_its_rect`.*
 
 ## F2 — one Lua program: shell surfaces from the config
 
