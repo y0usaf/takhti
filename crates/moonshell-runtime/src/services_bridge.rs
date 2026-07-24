@@ -14,40 +14,8 @@
 
 use mlua::prelude::*;
 use moonshell_services::battery::BatteryState;
-use moonshell_services::compositor::CompositorState;
 use moonshell_services::mpris::MprisState;
 use moonshell_services::network::NetworkState;
-
-/// Push compositor state plus keyboard activity into Lua facades.
-pub fn push_compositor(lua: &Lua, state: &CompositorState) -> LuaResult<()> {
-    let t = lua.create_table()?;
-    t.set("connected", state.connected)?;
-    t.set("active_workspace", state.active_workspace)?;
-    let ws = lua.create_table()?;
-    for (i, w) in state.workspaces.iter().enumerate() {
-        let wt = lua.create_table()?;
-        wt.set("id", w.id)?;
-        wt.set("name", w.name.as_str())?;
-        wt.set("active", w.active)?;
-        wt.set("windows", w.windows)?;
-        ws.set(i + 1, wt)?;
-    }
-    t.set("workspaces", ws)?;
-    if let Some(title) = &state.active_window {
-        t.set("active_window", title.as_str())?;
-    }
-    set_service(lua, "compositor", t)?;
-
-    let keyboard = lua.create_table()?;
-    if let Some(activity) = state.keyboard_activity {
-        keyboard.set("sequence", activity.sequence)?;
-        keyboard.set("hand", activity.hand.as_str())?;
-    } else {
-        keyboard.set("sequence", 0u64)?;
-        keyboard.set("hand", "right")?;
-    }
-    set_service(lua, "keyboard", keyboard)
-}
 
 /// `shell.services.battery:set(snapshot)`.
 pub fn push_battery(lua: &Lua, state: &BatteryState) -> LuaResult<()> {

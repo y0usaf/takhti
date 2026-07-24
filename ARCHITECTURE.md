@@ -20,9 +20,9 @@ graph TD
   moonshell_runtime["moonshell-runtime"] --> moonshell_render["moonshell-render"]
   moonshell_runtime["moonshell-runtime"] --> moonshell_services["moonshell-services"]
   moonshell_runtime["moonshell-runtime"] --> moonshell_surface["moonshell-surface"]
-  moonshell_services["moonshell-services"] --> tomoe_ipc["tomoe-ipc"]
   tomoe["tomoe"] --> moonshell_render["moonshell-render"]
   tomoe["tomoe"] --> moonshell_runtime["moonshell-runtime"]
+  tomoe["tomoe"] --> moonshell_services["moonshell-services"]
   tomoe["tomoe"] --> moonshell_surface["moonshell-surface"]
   tomoe["tomoe"] --> tomoe_ipc["tomoe-ipc"]
   xdg_desktop_portal_tomoe["xdg-desktop-portal-tomoe"] --> tomoe_ipc["tomoe-ipc"]
@@ -140,27 +140,6 @@ crate moonshell_services
 │   ├── enum Prop: pub(self)
 │   ├── enum Source: pub
 │   └── struct Upower: pub(self)
-├── mod compositor: pub
-│   ├── enum Compositor: pub
-│   ├── struct CompositorState: pub
-│   ├── enum Error: pub
-│   ├── struct KeyboardActivity: pub
-│   ├── enum KeyboardHand: pub
-│   ├── type Notify: pub(self)
-│   ├── struct Workspace: pub
-│   ├── mod hyprland: pub
-│   │   └── struct Backend: pub(self)
-│   ├── mod niri: pub
-│   │   ├── struct Backend: pub(self)
-│   │   ├── struct Model: pub(self)
-│   │   ├── struct Win: pub(self)
-│   │   └── struct Ws: pub(self)
-│   ├── mod sway: pub
-│   │   └── struct Backend: pub(self)
-│   ├── mod tomoe: pub
-│   │   ├── struct Backend: pub(self)
-│   │   └── struct Model: pub(self)
-│   └── mod wire: pub(self)
 ├── mod dbus: pub(crate)
 │   ├── struct Dbl: pub(crate)
 │   └── enum DbusError: pub

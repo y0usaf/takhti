@@ -56,14 +56,19 @@ local function remove(list, win)
   end
 end
 
--- ── Bar-facing IPC (the moonshell vocabulary; PLAN.md "moonshell-driven") ──
+-- ── Bar-facing state (the moonshell vocabulary; FUSION.md) ──
 -- Workspace state is policy, so it rides the *user* event vocabulary — the
 -- wire crate stays frozen (doctrine 03). `wm_state` is both a served method
--- (a bar's initial fetch) and a broadcast event (fired after every workspace
--- mutation). Payload shape, kept mechanical so any bar can consume it:
+-- (an external bar's initial fetch) and a broadcast event (fired after every
+-- workspace mutation). Payload shape, kept mechanical so any bar can consume
+-- it:
 --   { active = n, workspaces = { { id = i, windows = count }, ... } }
 -- Which workspaces to *display* (all, occupied-only, …) is the bar's policy;
 -- all of them are reported, with counts.
+--
+-- The native shell reads the same state in-VM: every announce also updates
+-- the `shell.services.compositor` facade (FUSION F3 — the moonshell widgets'
+-- vocabulary, no IPC involved). External consumers keep the broadcast.
 
 local function wm_state()
   local ws = {}
@@ -74,7 +79,24 @@ local function wm_state()
 end
 
 local function announce()
-  tomoe.ipc.broadcast("wm_state", wm_state())
+  local state = wm_state()
+  tomoe.ipc.broadcast("wm_state", state)
+  if shell and shell.services and shell.services.compositor then
+    local ws = {}
+    for i, w in ipairs(state.workspaces) do
+      ws[i] = {
+        id = w.id,
+        name = tostring(w.id),
+        active = w.id == state.active,
+        windows = w.windows,
+      }
+    end
+    shell.services.compositor:set({
+      connected = true,
+      active_workspace = state.active,
+      workspaces = ws,
+    })
+  end
 end
 
 tomoe.ipc.serve("wm_state", wm_state)
@@ -371,5 +393,9 @@ end, function(state)
   -- Resync any connected bars: their wm_state snapshot predates the reload.
   announce()
 end)
+
+-- Seed bar-facing state at require time so a native bar's first render
+-- (before any workspace mutation) already sees real workspaces.
+announce()
 
 return M

@@ -12,7 +12,6 @@
 //! expose their wire types.
 
 pub mod battery;
-pub mod compositor;
 pub mod mpris;
 pub mod network;
 

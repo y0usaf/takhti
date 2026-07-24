@@ -1688,9 +1688,7 @@ version = "0.1.0"
 dependencies = [
  "calloop 0.14.4",
  "rustbus",
- "serde_json",
  "thiserror 2.0.18",
- "tomoe-ipc",
  "tracing",
 ]
 
